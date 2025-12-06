@@ -1,333 +1,304 @@
 import streamlit as st
 import pandas as pd
 import io
-import datetime
 
-# --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Converter: Wallet to Cashew", layout="wide")
+# --- CONFIGURAZIONE PAGINA (Deve essere la prima istruzione) ---
+st.set_page_config(
+    page_title="Wallet to Cashew Converter",
+    page_icon="💸",
+    layout="centered", # Layout centrato per focalizzare l'attenzione
+    initial_sidebar_state="expanded"
+)
 
-st.title("🔄 Converter: Wallet by BudgetBakers ➡ Cashew")
+# --- CSS CUSTOM PER MIGLIORARE L'ESTETICA ---
 st.markdown("""
-Questa app converte il file CSV esportato da **Wallet by BudgetBakers** nel formato importabile da **Cashew**.
-Permette di mappare account, categorie ed etichette, e gestisce correttamente i trasferimenti e la codifica dei caratteri.
-""")
+<style>
+    .stApp {
+        background-color: #f8f9fa;
+    }
+    h1 {
+        color: #2c3e50;
+        font-family: 'Helvetica Neue', sans-serif;
+    }
+    .stButton>button {
+        width: 100%;
+        background-color: #4CAF50;
+        color: white;
+        border-radius: 8px;
+        height: 3em;
+        font-weight: bold;
+    }
+    .stButton>button:hover {
+        background-color: #45a049;
+        border-color: #45a049;
+    }
+    .step-container {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    .highlight {
+        color: #e91e63;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- FUNZIONI DI UTILITÀ ---
-
+# --- FUNZIONI DI LOGICA (Invariate) ---
 def fix_encoding_issues(text):
-    """
-    Tenta di correggere errori comuni di codifica (Mojibake).
-    Esempio: 'DecÃ²' -> 'Decò'
-    """
-    if not isinstance(text, str):
-        return text
+    if not isinstance(text, str): return text
     try:
-        # Tenta di codificare in cp1252 e decodificare in utf-8
-        # Questo risolve il caso in cui UTF-8 è stato letto come CP1252/Latin-1
         return text.encode('cp1252').decode('utf-8')
     except (UnicodeEncodeError, UnicodeDecodeError):
         return text
 
 def parse_amount(value):
-    """Converte stringhe valuta (es. '-1.234,56') in float."""
-    if isinstance(value, (int, float)):
-        return float(value)
-    if pd.isna(value) or value == '':
-        return 0.0
-    
-    # Rimuovi spazi e simboli valuta se presenti (anche se il csv di solito è pulito)
+    if isinstance(value, (int, float)): return float(value)
+    if pd.isna(value) or value == '': return 0.0
     value = str(value).replace('€', '').replace('$', '').strip()
-    
-    # Gestione formato europeo: 1.000,00 -> rimuovi . sostituisci , con .
-    # Gestione formato US: 1,000.00 -> rimuovi ,
-    
     if ',' in value and '.' in value:
-        if value.rfind(',') > value.rfind('.'): # Formato Europeo 1.234,56
-            value = value.replace('.', '').replace(',', '.')
-        else: # Formato US 1,234.56
-            value = value.replace(',', '')
-    elif ',' in value: # Solo virgola (es. 12,50) -> Europeo
-        value = value.replace(',', '.')
-    
-    try:
-        return float(value)
-    except ValueError:
-        return 0.0
+        if value.rfind(',') > value.rfind('.'): value = value.replace('.', '').replace(',', '.')
+        else: value = value.replace(',', '')
+    elif ',' in value: value = value.replace(',', '.')
+    try: return float(value)
+    except ValueError: return 0.0
 
-# --- SEZIONE 1: CARICAMENTO FILE ---
-st.sidebar.header("1. Carica File")
-uploaded_file = st.sidebar.file_uploader("Carica export Wallet (.csv)", type=['csv'])
+# --- HEADER E INTRODUZIONE ---
+st.title("💸 Wallet ➡ Cashew")
+st.markdown("""
+**Benvenuto!** Questo strumento ti aiuta a trasferire la tua vita finanziaria da *Wallet by BudgetBakers* a *Cashew* senza perdere nemmeno un centesimo.
+Segui i **3 passaggi** qui sotto per convertire il tuo file.
+""")
+
+# --- SIDEBAR: GUIDA E INFO ---
+with st.sidebar:
+    st.header("📘 Guida Rapida")
+    st.markdown("""
+    1. **Esporta** i dati da Wallet (formato CSV).
+    2. **Carica** il file qui a destra.
+    3. **Personalizza** le categorie e gli account.
+    4. **Scarica** il file pronto per Cashew.
+    
+    ---
+    **Nota sulla Privacy:**
+    I tuoi dati vengono elaborati *solo* nella memoria temporanea di questa sessione e non vengono salvati da nessuna parte.
+    """)
+    st.info("💡 Suggerimento: Cashew gestisce le categorie in modo diverso da Wallet. Usa lo step 2 per riorganizzarle al meglio.")
+
+# --- STEP 1: UPLOAD ---
+st.markdown("### 1️⃣ Carica il file Wallet")
+uploaded_file = st.file_uploader(
+    "Trascina qui il file `wallet.csv` o clicca per selezionarlo", 
+    type=['csv'],
+    help="Il file deve essere l'esportazione standard CSV di Wallet by BudgetBakers."
+)
 
 if uploaded_file is not None:
-    # Lettura del file
+    # Lettura e Pulizia Iniziale
     try:
-        # Wallet usa spesso il ; come separatore
         df_wallet = pd.read_csv(uploaded_file, sep=';')
-        
-        # Se le colonne sembrano sbagliate, prova con la virgola
         if len(df_wallet.columns) < 2:
             uploaded_file.seek(0)
             df_wallet = pd.read_csv(uploaded_file, sep=',')
-            
-        st.success(f"File caricato con successo! {len(df_wallet)} transazioni trovate.")
         
-        # 1.1 Fix Encoding sulle colonne stringa
-        st.info("Applicazione correzione caratteri (es. DecÃ² -> Decò)...")
+        # Encoding Fix
         cols_to_fix = ['note', 'payee', 'category', 'account', 'labels', 'type', 'payment_type']
         for col in cols_to_fix:
             if col in df_wallet.columns:
                 df_wallet[col] = df_wallet[col].apply(fix_encoding_issues)
-
-        # Anteprima dati grezzi
-        with st.expander("Vedi dati originali (primi 5 righi)"):
-            st.dataframe(df_wallet.head())
+        
+        df_wallet['amount_clean'] = df_wallet['amount'].apply(parse_amount)
+        
+        # Metrics Visuali
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Transazioni Trovate", len(df_wallet))
+        col_m2.metric("Data Inizio", df_wallet['date'].min()[:10])
+        col_m3.metric("Data Fine", df_wallet['date'].max()[:10])
+        
+        st.success("✅ File analizzato correttamente! Procedi sotto per configurare la conversione.")
 
     except Exception as e:
-        st.error(f"Errore nella lettura del file: {e}")
+        st.error(f"⚠️ C'è stato un problema con il file: {e}")
         st.stop()
 
-    # --- SEZIONE 2: PREPARAZIONE DATI ---
-    
-    # Pulizia importi
-    df_wallet['amount_clean'] = df_wallet['amount'].apply(parse_amount)
-    
-    # Estrazione liste univoche per i mapping
-    unique_accounts = df_wallet['account'].dropna().unique().tolist()
-    unique_categories = df_wallet['category'].dropna().unique().tolist()
-    
-    # Estrazione labels (possono essere multiple separate da spazio o virgola?)
-    # Assumiamo siano stringhe intere per ora, o separate da un carattere se necessario
-    unique_labels = df_wallet['labels'].dropna().unique().tolist()
+    # --- STEP 2: CONFIGURAZIONE (WIZARD) ---
+    st.markdown("---")
+    st.markdown("### 2️⃣ Personalizza i Dati")
+    st.markdown("Cashew ha bisogno di sapere come tradurre i tuoi vecchi dati. Configura le mappature qui sotto.")
 
-    # --- SEZIONE 3: PERSONALIZZAZIONE CASHEW (CATEGORIE & ACCOUNT) ---
-    st.header("🛠️ 2. Personalizzazione Categorie e Account")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Categorie Cashew")
-        # Categorie default fornite dall'utente
-        default_cashew_cats = [
-            "Mangiare", "Alimentari", "Shopping", "Trasporti", "Divertimento",
-            "Bollette e tasse", "Regali", "Bellezza", "Lavoro", "Viaggi", 
-            "Reddito", "Correzione saldo", "Salute", "Casa", "Altro"
-        ]
+    # Liste univoche
+    unique_accounts = sorted(df_wallet['account'].dropna().unique().tolist())
+    unique_categories = sorted(df_wallet['category'].dropna().unique().tolist())
+    unique_labels = sorted(df_wallet['labels'].dropna().unique().tolist())
+
+    # Tabs per organizzare meglio lo spazio
+    tab_cats, tab_accs, tab_lbls = st.tabs(["📂 Categorie", "💳 Account", "🏷️ Etichette (Opzionale)"])
+
+    # --- TAB CATEGORIE ---
+    with tab_cats:
+        st.info("Qui puoi decidere in quale Categoria (e Sottocategoria) di Cashew finiranno le tue spese di Wallet.")
         
-        # Editor per aggiungere/rimuovere categorie Cashew
-        cashew_cats_df = pd.DataFrame(default_cashew_cats, columns=["Categoria Cashew"])
-        edited_cashew_cats = st.data_editor(cashew_cats_df, num_rows="dynamic", key="editor_cats")
-        final_cashew_cats = sorted(edited_cashew_cats["Categoria Cashew"].unique().tolist())
-    
-    with col2:
-        st.subheader("Sottocategorie (Opzionale)")
-        st.markdown("Definisci alcune sottocategorie comuni se vuoi usarle nei mapping.")
-        default_subs = ["Supermercato", "Ristorante", "Benzina", "Abbonamenti", "Stipendio", "Mutuo"]
-        cashew_subs_df = pd.DataFrame(default_subs, columns=["Sottocategoria Cashew"])
-        edited_cashew_subs = st.data_editor(cashew_subs_df, num_rows="dynamic", key="editor_subs")
-        final_cashew_subs = sorted(edited_cashew_subs["Sottocategoria Cashew"].unique().tolist())
-        final_cashew_subs.insert(0, "") # Opzione vuota
-
-    # --- SEZIONE 4: MAPPING ---
-    st.header("🔗 3. Mappatura Dati")
-    st.markdown("Collega i dati di Wallet a quelli di Cashew.")
-
-    tabs = st.tabs(["Mappatura Account", "Mappatura Categorie", "Mappatura Labels (Avanzato)"])
-
-    # 4.1 Mappatura Account
-    with tabs[0]:
-        st.write("Rinomina gli account di Wallet per corrispondere a quelli di Cashew.")
-        account_mapping = {}
-        for acc in unique_accounts:
-            account_mapping[acc] = st.text_input(f"Account Wallet: **{acc}**", value=acc, key=f"acc_{acc}")
-
-    # 4.2 Mappatura Categorie
-    with tabs[1]:
-        st.write("Associa ogni categoria di Wallet a una Categoria e Sottocategoria di Cashew.")
-        st.write("**Nota:** Se la transazione è un 'Trasferimento', verrà gestita automaticamente nella logica successiva, ma puoi comunque mapparla qui per sicurezza.")
-        
-        category_mapping = []
-        for cat in unique_categories:
-            col_a, col_b, col_c = st.columns([2, 2, 2])
-            with col_a:
-                st.write(f"📂 **{cat}**")
-            with col_b:
-                # Pre-selezione intelligente se il nome corrisponde
-                try:
-                    default_idx = final_cashew_cats.index(cat)
-                except ValueError:
-                    default_idx = 0
-                
-                c_cat = st.selectbox("Cat. Cashew", final_cashew_cats, index=default_idx, key=f"cat_main_{cat}", label_visibility="collapsed")
-            with col_c:
-                c_sub = st.selectbox("Sub-Cat. Cashew", final_cashew_subs, index=0, key=f"cat_sub_{cat}", label_visibility="collapsed")
+        # Input categorie personalizzate
+        with st.expander("➕ Gestisci le Categorie disponibili su Cashew", expanded=False):
+            st.markdown("Aggiungi qui le categorie che hai già creato (o vuoi creare) su Cashew.")
+            c1, c2 = st.columns(2)
+            default_cats = ["Mangiare", "Alimentari", "Shopping", "Trasporti", "Divertimento", "Bollette e tasse", "Regali", "Bellezza", "Lavoro", "Viaggi", "Reddito", "Correzione saldo", "Salute", "Casa", "Altro"]
+            default_subs = ["Supermercato", "Ristorante", "Benzina", "Abbonamenti", "Stipendio", "Mutuo"]
             
-            category_mapping.append({
-                "Wallet Category": cat,
-                "Cashew Category": c_cat,
-                "Cashew Subcategory": c_sub
-            })
+            edited_cats = c1.data_editor(pd.DataFrame(default_cats, columns=["Categoria"]), num_rows="dynamic", key="ed_cats")
+            edited_subs = c2.data_editor(pd.DataFrame(default_subs, columns=["Sottocategoria"]), num_rows="dynamic", key="ed_subs")
+            
+            final_cashew_cats = sorted(edited_cats["Categoria"].unique().tolist())
+            final_cashew_subs = [""] + sorted(edited_subs["Sottocategoria"].unique().tolist())
+
+        # Mapping Table
+        st.markdown("#### Collega le categorie")
+        category_mapping = []
         
+        # Usiamo un container con scroll se la lista è lunga (simulato tramite expander o limitando visivamente)
+        for cat in unique_categories:
+            # Layout a card per ogni riga
+            with st.container():
+                c_src, c_arrow, c_dest_main, c_dest_sub = st.columns([3, 0.5, 3, 3])
+                c_src.markdown(f"**{cat}**")
+                c_arrow.markdown("➡")
+                
+                # Auto-select logic
+                def_idx = final_cashew_cats.index(cat) if cat in final_cashew_cats else 0
+                
+                sel_cat = c_dest_main.selectbox("", final_cashew_cats, index=def_idx, key=f"c_{cat}", label_visibility="collapsed", help="Categoria principale in Cashew")
+                sel_sub = c_dest_sub.selectbox("", final_cashew_subs, index=0, key=f"s_{cat}", label_visibility="collapsed", help="Sottocategoria in Cashew (Opzionale)")
+                
+                category_mapping.append({"Wallet Category": cat, "Cashew Category": sel_cat, "Cashew Subcategory": sel_sub})
+                st.divider() # Linea separatrice leggera
+
         df_cat_map = pd.DataFrame(category_mapping)
 
-    # 4.3 Mappatura Labels
-    with tabs[2]:
-        st.write("Le Labels hanno priorità sulle Categorie. Se una transazione ha questa label, userà questa mappatura.")
+    # --- TAB ACCOUNT ---
+    with tab_accs:
+        st.info("Assicurati che i nomi degli account coincidano con quelli che hai creato su Cashew, altrimenti ne verranno creati di nuovi.")
+        account_mapping = {}
+        for acc in unique_accounts:
+            c1, c2 = st.columns([1, 2])
+            c1.markdown(f"Dall'account: **{acc}**")
+            account_mapping[acc] = c2.text_input(f"Rinomina in:", value=acc, key=f"acc_{acc}", help=f"Come si chiama l'account '{acc}' su Cashew?")
+
+    # --- TAB LABELS ---
+    with tab_lbls:
+        st.write("Le Etichette hanno la precedenza sulle Categorie. Utile se usavi le etichette per gestire le vacanze o progetti specifici.")
         label_mapping = []
-        
-        if len(unique_labels) > 0:
+        if unique_labels:
             for lbl in unique_labels:
-                col_a, col_b, col_c = st.columns([2, 2, 2])
-                with col_a:
-                    st.write(f"🏷️ **{lbl}**")
-                with col_b:
-                    c_cat = st.selectbox("Cat. Cashew", ["(Usa Mapping Categoria)"] + final_cashew_cats, index=0, key=f"lbl_main_{lbl}", label_visibility="collapsed")
-                with col_c:
-                    c_sub = st.selectbox("Sub-Cat. Cashew", final_cashew_subs, index=0, key=f"lbl_sub_{lbl}", label_visibility="collapsed")
+                c1, c2, c3 = st.columns([2, 2, 2])
+                c1.markdown(f"🏷️ **{lbl}**")
+                l_cat = c2.selectbox("Categoria", ["(Usa Mapping Categoria)"] + final_cashew_cats, key=f"l_{lbl}")
+                l_sub = c3.selectbox("Sottocategoria", final_cashew_subs, key=f"ls_{lbl}")
                 
-                if c_cat != "(Usa Mapping Categoria)":
-                    label_mapping.append({
-                        "Wallet Label": lbl,
-                        "Cashew Category": c_cat,
-                        "Cashew Subcategory": c_sub
-                    })
+                if l_cat != "(Usa Mapping Categoria)":
+                    label_mapping.append({"Wallet Label": lbl, "Cashew Category": l_cat, "Cashew Subcategory": l_sub})
         else:
-            st.info("Nessuna label trovata nel file caricato.")
-            
+            st.caption("Nessuna etichetta trovata nel file.")
         df_lbl_map = pd.DataFrame(label_mapping)
 
-    # --- SEZIONE 5: ELABORAZIONE ---
-    st.header("🚀 4. Generazione File")
+    # --- STEP 3: OUTPUT ---
+    st.markdown("---")
+    st.markdown("### 3️⃣ Scarica e Importa")
     
-    include_payee_in_note = st.checkbox("Includi 'Payee' (Beneficiario) nella nota? (Consigliato per non perdere il dato)", value=True)
+    col_out_1, col_out_2 = st.columns([3, 1])
+    with col_out_1:
+        st.markdown("Tutto pronto? Clicca il pulsante per generare il file.")
+        include_payee = st.checkbox("📝 Includi il Beneficiario (es. 'Conad') nelle note", value=True, help="Consigliato. Poiché il titolo della transazione sarà la Categoria, questo ti permette di sapere chi hai pagato leggendo le note.")
     
-    if st.button("Converti File"):
-        output_rows = []
-        
-        # Dizionari di lookup veloci
-        cat_map_dict = df_cat_map.set_index("Wallet Category").to_dict('index')
-        lbl_map_dict = {}
-        if not df_lbl_map.empty:
-            lbl_map_dict = df_lbl_map.set_index("Wallet Label").to_dict('index')
+    with col_out_2:
+        # Spazio vuoto per allineamento
+        pass
 
-        for index, row in df_wallet.iterrows():
-            # 1. Account
+    if st.button("🚀 CONVERTI ORA", type="primary"):
+        # --- ELABORAZIONE DATI (Logic Core) ---
+        output_rows = []
+        cat_map_dict = df_cat_map.set_index("Wallet Category").to_dict('index')
+        lbl_map_dict = df_lbl_map.set_index("Wallet Label").to_dict('index') if not df_lbl_map.empty else {}
+
+        progress_bar = st.progress(0)
+        total_rows = len(df_wallet)
+
+        for i, (index, row) in enumerate(df_wallet.iterrows()):
+            # Update progress bar every 10%
+            if i % (max(1, total_rows // 10)) == 0:
+                progress_bar.progress(int((i / total_rows) * 100))
+
+            # Logic extraction
             orig_acc = row.get('account', '')
             target_acc = account_mapping.get(orig_acc, orig_acc)
             
-            # 2. Date
-            orig_date = row.get('date', '')
-            # Wallet format standard: YYYY-MM-DD HH:MM:SS
-            # Cashew format: YYYY-MM-DD HH:MM:SS.000 (o simile)
-            
-            # 3. Logic: Transfer vs Normal
-            is_transfer = str(row.get('transfer', 'false')).lower() == 'true' or \
-                          str(row.get('type', '')).upper() == 'TRANSFER'
-            
+            is_transfer = str(row.get('transfer', 'false')).lower() == 'true' or str(row.get('type', '')).upper() == 'TRANSFER'
             w_cat = row.get('category', '')
             w_lbl = row.get('labels', '')
-            w_payee = row.get('payee', '')
-            if pd.isna(w_payee): w_payee = ""
-            
-            w_note = row.get('note', '')
-            if pd.isna(w_note): w_note = ""
+            w_payee = row.get('payee', '') if not pd.isna(row.get('payee', '')) else ""
+            w_note = row.get('note', '') if not pd.isna(row.get('note', '')) else ""
 
-            target_cat = ""
-            target_sub = ""
-            target_title = ""
-            target_note = w_note
-            
-            # --- LOGICA DI ASSEGNAZIONE CATEGORIA ---
-            # Priorità 1: Transfer
+            # Default targets
+            target_cat, target_sub, target_title, target_note = "", "", w_cat, w_note
+
             if is_transfer:
                 target_cat = "Correzione saldo"
                 target_title = "Trasferimento"
-                # Formattazione nota trasferimento
-                transfer_note_part = f"Trasferimento ({w_cat})" if w_cat != 'TRANSFER' else "Trasferimento"
-                if w_note:
-                    target_note = f"{transfer_note_part}\n{w_note}"
-                else:
-                    target_note = transfer_note_part
-            
+                trans_text = f"Trasferimento ({w_cat})" if w_cat != 'TRANSFER' else "Trasferimento"
+                target_note = f"{trans_text}\n{w_note}" if w_note else trans_text
             else:
-                # Priorità 2: Labels
-                match_found = False
+                # Priority: Label > Category > Default
+                match = False
                 if w_lbl in lbl_map_dict:
                     target_cat = lbl_map_dict[w_lbl]["Cashew Category"]
                     target_sub = lbl_map_dict[w_lbl]["Cashew Subcategory"]
-                    match_found = True
+                    match = True
                 
-                # Priorità 3: Category Mapping
-                if not match_found and w_cat in cat_map_dict:
+                if not match and w_cat in cat_map_dict:
                     target_cat = cat_map_dict[w_cat]["Cashew Category"]
                     target_sub = cat_map_dict[w_cat]["Cashew Subcategory"]
-                elif not match_found:
-                    # Fallback
-                    target_cat = "Altro" 
+                elif not match:
+                    target_cat = "Altro"
 
-                # Requirement: Title = Wallet Category
-                target_title = w_cat
-                
-                # Payee logic
-                if include_payee_in_note and w_payee:
-                    if target_note:
-                        target_note = f"{target_note} | Payee: {w_payee}"
-                    else:
-                        target_note = f"Payee: {w_payee}"
-                    
-                    # Se c'è anche una label, aggiungiamola alla nota per completezza
-                    if w_lbl and not pd.isna(w_lbl):
-                         target_note = f"{target_note} #{w_lbl}"
+                # Payee in note logic
+                if include_payee and w_payee:
+                    sep = " | " if target_note else ""
+                    target_note += f"{sep}Payee: {w_payee}"
+                if w_lbl and not pd.isna(w_lbl):
+                    sep = " " if target_note else ""
+                    target_note += f"{sep}#{w_lbl}"
 
-            # 4. Amount & Type
             amount = row['amount_clean']
-            is_income = amount > 0
-            
-            # 5. Costruzione riga Cashew
-            # Colonne Cashew: account,amount,currency,title,note,date,income,type,category name,subcategory name,color,icon,emoji,budget,objective
-            
             new_row = {
                 "account": target_acc,
                 "amount": amount,
                 "currency": row.get('currency', 'EUR'),
                 "title": target_title,
                 "note": target_note,
-                "date": orig_date,
-                "income": str(is_income).lower(), # Cashew usa 'true'/'false' minuscolo nel csv spesso
-                "type": "null", # Default null unless specific debt type
+                "date": row.get('date', ''),
+                "income": str(amount > 0).lower(),
+                "type": "null",
                 "category name": target_cat,
                 "subcategory name": target_sub,
-                "color": "", # Lasciare vuoto per default app
-                "icon": "",
-                "emoji": "",
-                "budget": "",
-                "objective": ""
+                "color": "", "icon": "", "emoji": "", "budget": "", "objective": ""
             }
             output_rows.append(new_row)
-            
+
+        progress_bar.progress(100)
         df_cashew = pd.DataFrame(output_rows)
         
-        # Anteprima risultato
-        st.subheader("Anteprima Output Cashew")
-        st.dataframe(df_cashew.head())
+        # Success Area
+        st.balloons()
+        st.markdown("### 🎉 Conversione Completata!")
+        st.success(f"File generato con {len(df_cashew)} transazioni.")
         
         # Download
         csv_data = df_cashew.to_csv(index=False, sep=',', encoding='utf-8')
         st.download_button(
-            label="💾 Scarica cashew.csv",
+            label="💾 CLICCA QUI PER SCARICARE CASHEW.CSV",
             data=csv_data,
             file_name="cashew_import.csv",
-            mime="text/csv"
+            mime="text/csv",
+            help="Importa questo file in Cashew > Settings > Import & Export"
         )
-
-# Istruzioni Sidebar
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Guida Rapida")
-st.sidebar.info(
-    """
-    1. Carica il file `wallet.csv`.
-    2. Nella sezione "Personalizzazione", aggiungi le categorie che usi su Cashew.
-    3. Mappa gli Account (es. 'Contanti' -> 'Cash').
-    4. Mappa le Categorie e/o le Label.
-    5. Scarica il file e importalo in Cashew (Settings > Import & Export).
-    """
-)
