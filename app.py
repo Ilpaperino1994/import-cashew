@@ -1,304 +1,343 @@
 import streamlit as st
 import pandas as pd
-import io
+import json
+import difflib
 
-# --- CONFIGURAZIONE PAGINA (Deve essere la prima istruzione) ---
+# --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(
-    page_title="Wallet to Cashew Converter",
+    page_title="Wallet to Cashew Pro Converter",
     page_icon="💸",
-    layout="centered", # Layout centrato per focalizzare l'attenzione
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CSS CUSTOM PER MIGLIORARE L'ESTETICA ---
+# --- CSS CUSTOM & STYLING ---
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #f8f9fa;
-    }
-    h1 {
-        color: #2c3e50;
-        font-family: 'Helvetica Neue', sans-serif;
-    }
-    .stButton>button {
-        width: 100%;
-        background-color: #4CAF50;
-        color: white;
-        border-radius: 8px;
-        height: 3em;
-        font-weight: bold;
-    }
-    .stButton>button:hover {
-        background-color: #45a049;
-        border-color: #45a049;
-    }
-    .step-container {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-    }
-    .highlight {
-        color: #e91e63;
-        font-weight: bold;
-    }
+    .stApp { background-color: #f4f6f9; }
+    .main-header { font-size: 2.5rem; color: #2c3e50; font-weight: 700; margin-bottom: 0px; }
+    .sub-header { font-size: 1.2rem; color: #7f8c8d; margin-bottom: 20px; }
+    .card { background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+    .mapping-row { border-bottom: 1px solid #eee; padding: 10px 0; }
+    .highlight { color: #4CAF50; font-weight: bold; }
+    /* Render buttons nicer */
+    div.stButton > button:first-child { border-radius: 8px; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNZIONI DI LOGICA (Invariate) ---
+# --- FUNZIONI DI UTILITÀ ---
+
 def fix_encoding_issues(text):
     if not isinstance(text, str): return text
-    try:
-        return text.encode('cp1252').decode('utf-8')
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return text
+    try: return text.encode('cp1252').decode('utf-8')
+    except: return text
 
 def parse_amount(value):
     if isinstance(value, (int, float)): return float(value)
     if pd.isna(value) or value == '': return 0.0
-    value = str(value).replace('€', '').replace('$', '').strip()
-    if ',' in value and '.' in value:
-        if value.rfind(',') > value.rfind('.'): value = value.replace('.', '').replace(',', '.')
-        else: value = value.replace(',', '')
-    elif ',' in value: value = value.replace(',', '.')
-    try: return float(value)
-    except ValueError: return 0.0
+    val_str = str(value).replace('€', '').replace('$', '').strip()
+    # Gestione formati EU/US
+    if ',' in val_str and '.' in val_str:
+        if val_str.rfind(',') > val_str.rfind('.'): val_str = val_str.replace('.', '').replace(',', '.')
+        else: val_str = val_str.replace(',', '')
+    elif ',' in val_str: val_str = val_str.replace(',', '.')
+    try: return float(val_str)
+    except: return 0.0
 
-# --- HEADER E INTRODUZIONE ---
-st.title("💸 Wallet ➡ Cashew")
-st.markdown("""
-**Benvenuto!** Questo strumento ti aiuta a trasferire la tua vita finanziaria da *Wallet by BudgetBakers* a *Cashew* senza perdere nemmeno un centesimo.
-Segui i **3 passaggi** qui sotto per convertire il tuo file.
-""")
-
-# --- SIDEBAR: GUIDA E INFO ---
-with st.sidebar:
-    st.header("📘 Guida Rapida")
-    st.markdown("""
-    1. **Esporta** i dati da Wallet (formato CSV).
-    2. **Carica** il file qui a destra.
-    3. **Personalizza** le categorie e gli account.
-    4. **Scarica** il file pronto per Cashew.
+def smart_guess_category(wallet_cat, cashew_structure):
+    """
+    Cerca la categoria Cashew più simile al nome della categoria Wallet.
+    Ritorna (Category, Subcategory)
+    """
+    wallet_cat_lower = wallet_cat.lower()
     
-    ---
-    **Nota sulla Privacy:**
-    I tuoi dati vengono elaborati *solo* nella memoria temporanea di questa sessione e non vengono salvati da nessuna parte.
-    """)
-    st.info("💡 Suggerimento: Cashew gestisce le categorie in modo diverso da Wallet. Usa lo step 2 per riorganizzarle al meglio.")
+    # 1. Cerca match esatto o parziale nelle Sottocategorie
+    for main_cat, subs in cashew_structure.items():
+        # Check Main Category Name
+        if wallet_cat_lower in main_cat.lower():
+            return main_cat, ""
+        
+        # Check Subcategories
+        for sub in subs:
+            if wallet_cat_lower in sub.lower() or sub.lower() in wallet_cat_lower:
+                return main_cat, sub
+                
+    # 2. Fuzzy match se non trova nulla
+    all_main_cats = list(cashew_structure.keys())
+    matches = difflib.get_close_matches(wallet_cat, all_main_cats, n=1, cutoff=0.6)
+    if matches:
+        return matches[0], ""
+        
+    return None, None
 
-# --- STEP 1: UPLOAD ---
-st.markdown("### 1️⃣ Carica il file Wallet")
-uploaded_file = st.file_uploader(
-    "Trascina qui il file `wallet.csv` o clicca per selezionarlo", 
-    type=['csv'],
-    help="Il file deve essere l'esportazione standard CSV di Wallet by BudgetBakers."
-)
+# --- INIZIALIZZAZIONE SESSION STATE ---
+# Struttura di default Cashew (Gerarchica)
+if 'cashew_structure' not in st.session_state:
+    st.session_state.cashew_structure = {
+        "Alimentari": ["Supermercato", "Minimarket"],
+        "Mangiare fuori": ["Ristorante", "Bar", "Fast Food"],
+        "Trasporti": ["Benzina", "Treno", "Bus", "Parcheggio", "Manutenzione"],
+        "Shopping": ["Vestiti", "Elettronica", "Casa"],
+        "Divertimento": ["Cinema", "Streaming", "Hobby"],
+        "Bollette": ["Luce", "Gas", "Internet", "Affitto"],
+        "Salute": ["Farmacia", "Dottore", "Sport"],
+        "Reddito": ["Stipendio", "Rimborsi", "Regali"],
+        "Correzione saldo": [],
+        "Altro": []
+    }
 
-if uploaded_file is not None:
-    # Lettura e Pulizia Iniziale
+# --- UI HEADER ---
+st.markdown('<div class="main-header">🔄 Wallet to Cashew Pro</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Strumento avanzato di migrazione dati finanziari</div>', unsafe_allow_html=True)
+
+# --- SIDEBAR: GESTIONE CONFIGURAZIONE ---
+with st.sidebar:
+    st.header("⚙️ Configurazione")
+    st.info("💡 Suggerimento: Salva la tua configurazione per non dover rimappare tutto la prossima volta!")
+    
+    # Upload Config
+    uploaded_config = st.file_uploader("📂 Carica file Mappatura (.json)", type=['json'])
+    if uploaded_config is not None:
+        try:
+            data = json.load(uploaded_config)
+            st.session_state.saved_mapping = data.get('mapping', {})
+            st.session_state.saved_accounts = data.get('accounts', {})
+            # Se nel json c'è anche la struttura categorie personalizzata
+            if 'structure' in data:
+                st.session_state.cashew_structure = data['structure']
+            st.success("Configurazione caricata!")
+        except:
+            st.error("File JSON non valido.")
+
+# --- STEP 1: UPLOAD DATA ---
+st.markdown("### 1️⃣ Importazione Dati")
+uploaded_file = st.file_uploader("Carica il file `wallet.csv`", type=['csv'])
+
+if uploaded_file:
+    # --- LETTURA FILE ---
     try:
-        df_wallet = pd.read_csv(uploaded_file, sep=';')
-        if len(df_wallet.columns) < 2:
+        df = pd.read_csv(uploaded_file, sep=';')
+        if len(df.columns) < 2:
             uploaded_file.seek(0)
-            df_wallet = pd.read_csv(uploaded_file, sep=',')
+            df = pd.read_csv(uploaded_file, sep=',')
         
         # Encoding Fix
-        cols_to_fix = ['note', 'payee', 'category', 'account', 'labels', 'type', 'payment_type']
-        for col in cols_to_fix:
-            if col in df_wallet.columns:
-                df_wallet[col] = df_wallet[col].apply(fix_encoding_issues)
+        for col in df.select_dtypes(include=['object']).columns:
+            df[col] = df[col].apply(fix_encoding_issues)
         
-        df_wallet['amount_clean'] = df_wallet['amount'].apply(parse_amount)
+        df['amount_clean'] = df['amount'].apply(parse_amount)
         
-        # Metrics Visuali
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Transazioni Trovate", len(df_wallet))
-        col_m2.metric("Data Inizio", df_wallet['date'].min()[:10])
-        col_m3.metric("Data Fine", df_wallet['date'].max()[:10])
+        # Estrazione Liste Univoche
+        unique_cats = sorted(df['category'].dropna().unique().tolist())
+        unique_accs = sorted(df['account'].dropna().unique().tolist())
         
-        st.success("✅ File analizzato correttamente! Procedi sotto per configurare la conversione.")
+        # Statistiche rapide
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Transazioni", len(df))
+        c2.metric("Categorie Wallet", len(unique_cats))
+        c3.metric("Conti Rilevati", len(unique_accs))
 
     except Exception as e:
-        st.error(f"⚠️ C'è stato un problema con il file: {e}")
+        st.error(f"Errore lettura file: {e}")
         st.stop()
 
-    # --- STEP 2: CONFIGURAZIONE (WIZARD) ---
+    # --- STEP 2: DEFINIZIONE STRUTTURA CASHEW ---
     st.markdown("---")
-    st.markdown("### 2️⃣ Personalizza i Dati")
-    st.markdown("Cashew ha bisogno di sapere come tradurre i tuoi vecchi dati. Configura le mappature qui sotto.")
-
-    # Liste univoche
-    unique_accounts = sorted(df_wallet['account'].dropna().unique().tolist())
-    unique_categories = sorted(df_wallet['category'].dropna().unique().tolist())
-    unique_labels = sorted(df_wallet['labels'].dropna().unique().tolist())
-
-    # Tabs per organizzare meglio lo spazio
-    tab_cats, tab_accs, tab_lbls = st.tabs(["📂 Categorie", "💳 Account", "🏷️ Etichette (Opzionale)"])
-
-    # --- TAB CATEGORIE ---
-    with tab_cats:
-        st.info("Qui puoi decidere in quale Categoria (e Sottocategoria) di Cashew finiranno le tue spese di Wallet.")
+    st.markdown("### 2️⃣ Struttura Categorie Cashew")
+    st.markdown("""
+    Definisci qui le categorie e sottocategorie esatte che usi su Cashew. 
+    Questa struttura verrà usata per creare i menu a tendina nel prossimo passaggio.
+    """)
+    
+    with st.expander("🛠️ Modifica Struttura Categorie (Avanzato)", expanded=False):
+        # Convertiamo il dict in DataFrame per l'editing
+        flat_data = []
+        for cat, subs in st.session_state.cashew_structure.items():
+            if not subs:
+                flat_data.append({"Categoria": cat, "Sottocategoria": ""})
+            else:
+                for sub in subs:
+                    flat_data.append({"Categoria": cat, "Sottocategoria": sub})
         
-        # Input categorie personalizzate
-        with st.expander("➕ Gestisci le Categorie disponibili su Cashew", expanded=False):
-            st.markdown("Aggiungi qui le categorie che hai già creato (o vuoi creare) su Cashew.")
-            c1, c2 = st.columns(2)
-            default_cats = ["Mangiare", "Alimentari", "Shopping", "Trasporti", "Divertimento", "Bollette e tasse", "Regali", "Bellezza", "Lavoro", "Viaggi", "Reddito", "Correzione saldo", "Salute", "Casa", "Altro"]
-            default_subs = ["Supermercato", "Ristorante", "Benzina", "Abbonamenti", "Stipendio", "Mutuo"]
-            
-            edited_cats = c1.data_editor(pd.DataFrame(default_cats, columns=["Categoria"]), num_rows="dynamic", key="ed_cats")
-            edited_subs = c2.data_editor(pd.DataFrame(default_subs, columns=["Sottocategoria"]), num_rows="dynamic", key="ed_subs")
-            
-            final_cashew_cats = sorted(edited_cats["Categoria"].unique().tolist())
-            final_cashew_subs = [""] + sorted(edited_subs["Sottocategoria"].unique().tolist())
-
-        # Mapping Table
-        st.markdown("#### Collega le categorie")
-        category_mapping = []
+        df_structure = pd.DataFrame(flat_data)
+        edited_df = st.data_editor(df_structure, num_rows="dynamic", use_container_width=True)
         
-        # Usiamo un container con scroll se la lista è lunga (simulato tramite expander o limitando visivamente)
-        for cat in unique_categories:
-            # Layout a card per ogni riga
-            with st.container():
-                c_src, c_arrow, c_dest_main, c_dest_sub = st.columns([3, 0.5, 3, 3])
-                c_src.markdown(f"**{cat}**")
-                c_arrow.markdown("➡")
-                
-                # Auto-select logic
-                def_idx = final_cashew_cats.index(cat) if cat in final_cashew_cats else 0
-                
-                sel_cat = c_dest_main.selectbox("", final_cashew_cats, index=def_idx, key=f"c_{cat}", label_visibility="collapsed", help="Categoria principale in Cashew")
-                sel_sub = c_dest_sub.selectbox("", final_cashew_subs, index=0, key=f"s_{cat}", label_visibility="collapsed", help="Sottocategoria in Cashew (Opzionale)")
-                
-                category_mapping.append({"Wallet Category": cat, "Cashew Category": sel_cat, "Cashew Subcategory": sel_sub})
-                st.divider() # Linea separatrice leggera
+        # Ricostruiamo il dict dalla tabella modificata
+        new_structure = {}
+        for _, row in edited_df.iterrows():
+            c = row['Categoria'].strip()
+            s = row['Sottocategoria'].strip() if row['Sottocategoria'] else ""
+            if c:
+                if c not in new_structure: new_structure[c] = []
+                if s and s not in new_structure[c]: new_structure[c].append(s)
+        
+        st.session_state.cashew_structure = new_structure
 
-        df_cat_map = pd.DataFrame(category_mapping)
-
-    # --- TAB ACCOUNT ---
-    with tab_accs:
-        st.info("Assicurati che i nomi degli account coincidano con quelli che hai creato su Cashew, altrimenti ne verranno creati di nuovi.")
-        account_mapping = {}
-        for acc in unique_accounts:
-            c1, c2 = st.columns([1, 2])
-            c1.markdown(f"Dall'account: **{acc}**")
-            account_mapping[acc] = c2.text_input(f"Rinomina in:", value=acc, key=f"acc_{acc}", help=f"Come si chiama l'account '{acc}' su Cashew?")
-
-    # --- TAB LABELS ---
-    with tab_lbls:
-        st.write("Le Etichette hanno la precedenza sulle Categorie. Utile se usavi le etichette per gestire le vacanze o progetti specifici.")
-        label_mapping = []
-        if unique_labels:
-            for lbl in unique_labels:
-                c1, c2, c3 = st.columns([2, 2, 2])
-                c1.markdown(f"🏷️ **{lbl}**")
-                l_cat = c2.selectbox("Categoria", ["(Usa Mapping Categoria)"] + final_cashew_cats, key=f"l_{lbl}")
-                l_sub = c3.selectbox("Sottocategoria", final_cashew_subs, key=f"ls_{lbl}")
-                
-                if l_cat != "(Usa Mapping Categoria)":
-                    label_mapping.append({"Wallet Label": lbl, "Cashew Category": l_cat, "Cashew Subcategory": l_sub})
-        else:
-            st.caption("Nessuna etichetta trovata nel file.")
-        df_lbl_map = pd.DataFrame(label_mapping)
-
-    # --- STEP 3: OUTPUT ---
+    # --- STEP 3: MAPPATURA INTELLIGENTE ---
     st.markdown("---")
-    st.markdown("### 3️⃣ Scarica e Importa")
+    st.markdown("### 3️⃣ Mappatura Categorie")
     
-    col_out_1, col_out_2 = st.columns([3, 1])
-    with col_out_1:
-        st.markdown("Tutto pronto? Clicca il pulsante per generare il file.")
-        include_payee = st.checkbox("📝 Includi il Beneficiario (es. 'Conad') nelle note", value=True, help="Consigliato. Poiché il titolo della transazione sarà la Categoria, questo ti permette di sapere chi hai pagato leggendo le note.")
+    col_filter, col_reset = st.columns([3, 1])
+    filter_text = col_filter.text_input("🔍 Cerca categoria Wallet...", "")
     
-    with col_out_2:
-        # Spazio vuoto per allineamento
-        pass
+    # Container scrollabile per le mappature
+    with st.container(height=500):
+        mapping_results = {} # Store results: key=wallet_cat, val={'main': .., 'sub': ..}
+        
+        # Recupera mapping salvato se esiste
+        saved_map = st.session_state.get('saved_mapping', {})
 
-    if st.button("🚀 CONVERTI ORA", type="primary"):
-        # --- ELABORAZIONE DATI (Logic Core) ---
-        output_rows = []
-        cat_map_dict = df_cat_map.set_index("Wallet Category").to_dict('index')
-        lbl_map_dict = df_lbl_map.set_index("Wallet Label").to_dict('index') if not df_lbl_map.empty else {}
+        filtered_cats = [c for c in unique_cats if filter_text.lower() in c.lower()]
+        
+        for w_cat in filtered_cats:
+            st.markdown(f"<div class='mapping-row'>", unsafe_allow_html=True)
+            c1, c2, c3, c4 = st.columns([3, 0.5, 3, 3])
+            
+            c1.markdown(f"**{w_cat}**")
+            c2.write("➡")
+            
+            # Logica di Pre-selezione:
+            # 1. Mapping Salvato (JSON)
+            # 2. Smart Guess (Nome simile)
+            # 3. Default (Primo della lista)
+            
+            curr_main = saved_map.get(w_cat, {}).get('main')
+            curr_sub = saved_map.get(w_cat, {}).get('sub')
+            
+            if not curr_main:
+                guess_main, guess_sub = smart_guess_category(w_cat, st.session_state.cashew_structure)
+                if guess_main:
+                    curr_main = guess_main
+                    curr_sub = guess_sub
+            
+            # Dropdown Main Category
+            main_options = list(st.session_state.cashew_structure.keys())
+            try:
+                idx_main = main_options.index(curr_main) if curr_main in main_options else 0
+            except: idx_main = 0
+            
+            sel_main = c3.selectbox(
+                "Cat", main_options, index=idx_main, 
+                key=f"m_{w_cat}", label_visibility="collapsed"
+            )
+            
+            # Dropdown Sub Category (Dynamic based on Main)
+            sub_options = [""] + st.session_state.cashew_structure.get(sel_main, [])
+            try:
+                idx_sub = sub_options.index(curr_sub) if curr_sub in sub_options else 0
+            except: idx_sub = 0
+            
+            sel_sub = c4.selectbox(
+                "Sub", sub_options, index=idx_sub, 
+                key=f"s_{w_cat}", label_visibility="collapsed"
+            )
+            
+            mapping_results[w_cat] = {'main': sel_main, 'sub': sel_sub}
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        progress_bar = st.progress(0)
-        total_rows = len(df_wallet)
+    # --- STEP 4: ACCOUNT MAPPING ---
+    st.markdown("### 4️⃣ Mappatura Conti")
+    with st.expander("💳 Configura Nomi Conti", expanded=True):
+        saved_accs = st.session_state.get('saved_accounts', {})
+        acc_mapping_res = {}
+        cols = st.columns(3)
+        for i, acc in enumerate(unique_accs):
+            val = saved_accs.get(acc, acc)
+            acc_mapping_res[acc] = cols[i % 3].text_input(f"Wallet: {acc}", value=val)
 
-        for i, (index, row) in enumerate(df_wallet.iterrows()):
-            # Update progress bar every 10%
-            if i % (max(1, total_rows // 10)) == 0:
-                progress_bar.progress(int((i / total_rows) * 100))
-
-            # Logic extraction
+    # --- STEP 5: ELABORAZIONE & ANTEPRIMA ---
+    st.markdown("---")
+    st.markdown("### 5️⃣ Anteprima e Export")
+    
+    include_payee = st.checkbox("Includi 'Payee' nelle note", value=True)
+    
+    if st.button("🔄 Genera Anteprima", type="primary"):
+        processed_rows = []
+        
+        for index, row in df.iterrows():
+            # Basic info
             orig_acc = row.get('account', '')
-            target_acc = account_mapping.get(orig_acc, orig_acc)
-            
-            is_transfer = str(row.get('transfer', 'false')).lower() == 'true' or str(row.get('type', '')).upper() == 'TRANSFER'
+            target_acc = acc_mapping_res.get(orig_acc, orig_acc)
+            amount = row['amount_clean']
             w_cat = row.get('category', '')
-            w_lbl = row.get('labels', '')
-            w_payee = row.get('payee', '') if not pd.isna(row.get('payee', '')) else ""
-            w_note = row.get('note', '') if not pd.isna(row.get('note', '')) else ""
-
-            # Default targets
-            target_cat, target_sub, target_title, target_note = "", "", w_cat, w_note
+            w_note = str(row.get('note', '')) if not pd.isna(row.get('note', '')) else ""
+            w_payee = str(row.get('payee', '')) if not pd.isna(row.get('payee', '')) else ""
+            
+            # Transfer Logic
+            is_transfer = str(row.get('transfer', 'false')).lower() == 'true' or \
+                          str(row.get('type', '')).upper() == 'TRANSFER'
+            
+            target_cat, target_sub, target_title = "", "", w_cat
+            final_note = w_note
 
             if is_transfer:
                 target_cat = "Correzione saldo"
                 target_title = "Trasferimento"
-                trans_text = f"Trasferimento ({w_cat})" if w_cat != 'TRANSFER' else "Trasferimento"
-                target_note = f"{trans_text}\n{w_note}" if w_note else trans_text
+                prefix = f"Trasferimento ({w_cat})" if w_cat != 'TRANSFER' else "Trasferimento"
+                final_note = f"{prefix}\n{w_note}" if w_note else prefix
             else:
-                # Priority: Label > Category > Default
-                match = False
-                if w_lbl in lbl_map_dict:
-                    target_cat = lbl_map_dict[w_lbl]["Cashew Category"]
-                    target_sub = lbl_map_dict[w_lbl]["Cashew Subcategory"]
-                    match = True
-                
-                if not match and w_cat in cat_map_dict:
-                    target_cat = cat_map_dict[w_cat]["Cashew Category"]
-                    target_sub = cat_map_dict[w_cat]["Cashew Subcategory"]
-                elif not match:
+                # Get mapping
+                if w_cat in mapping_results:
+                    target_cat = mapping_results[w_cat]['main']
+                    target_sub = mapping_results[w_cat]['sub']
+                else:
                     target_cat = "Altro"
-
-                # Payee in note logic
+                
+                # Payee Logic
                 if include_payee and w_payee:
-                    sep = " | " if target_note else ""
-                    target_note += f"{sep}Payee: {w_payee}"
-                if w_lbl and not pd.isna(w_lbl):
-                    sep = " " if target_note else ""
-                    target_note += f"{sep}#{w_lbl}"
+                    sep = " | " if final_note else ""
+                    final_note += f"{sep}Payee: {w_payee}"
 
-            amount = row['amount_clean']
             new_row = {
                 "account": target_acc,
                 "amount": amount,
                 "currency": row.get('currency', 'EUR'),
                 "title": target_title,
-                "note": target_note,
+                "note": final_note,
                 "date": row.get('date', ''),
                 "income": str(amount > 0).lower(),
-                "type": "null",
                 "category name": target_cat,
                 "subcategory name": target_sub,
-                "color": "", "icon": "", "emoji": "", "budget": "", "objective": ""
+                # Default nulls
+                "type": "null", "color": "", "icon": "", "emoji": "", "budget": "", "objective": ""
             }
-            output_rows.append(new_row)
-
-        progress_bar.progress(100)
-        df_cashew = pd.DataFrame(output_rows)
+            processed_rows.append(new_row)
         
-        # Success Area
-        st.balloons()
-        st.markdown("### 🎉 Conversione Completata!")
-        st.success(f"File generato con {len(df_cashew)} transazioni.")
+        df_cashew = pd.DataFrame(processed_rows)
         
-        # Download
+        # Visualizzazione Anteprima
+        st.subheader("📊 Anteprima Dati")
+        st.dataframe(df_cashew.head(100), use_container_width=True)
+        
+        # Creazione JSON Configurazione per il futuro
+        config_export = {
+            "mapping": mapping_results,
+            "accounts": acc_mapping_res,
+            "structure": st.session_state.cashew_structure
+        }
+        json_config = json.dumps(config_export, indent=2)
+        
+        c_down1, c_down2 = st.columns(2)
+        
+        # Download CSV
         csv_data = df_cashew.to_csv(index=False, sep=',', encoding='utf-8')
-        st.download_button(
-            label="💾 CLICCA QUI PER SCARICARE CASHEW.CSV",
+        c_down1.download_button(
+            label="💾 SCARICA CSV CASHEW",
             data=csv_data,
             file_name="cashew_import.csv",
             mime="text/csv",
-            help="Importa questo file in Cashew > Settings > Import & Export"
+            type="primary"
         )
+        
+        # Download Config JSON
+        c_down2.download_button(
+            label="⚙️ Scarica Configurazione Mappatura",
+            data=json_config,
+            file_name="wallet_mapping_config.json",
+            mime="application/json",
+            help="Salva questo file e ricaricalo la prossima volta per non dover rifare la mappatura!"
+        )
+
+# Footer
+st.markdown("---")
+st.caption("Developed for personal finance migration.")
