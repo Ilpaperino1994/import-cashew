@@ -3,11 +3,52 @@ import uuid
 import datetime
 import time
 from typing import List, Dict
-from thefuzz import process # Libreria per AI/Fuzzy matching
-from models import WalletTransaction, ProcessedTransaction
+from thefuzz import process
+from models import WalletTransaction, CashewConfig
 
-# --- PERFORMANCE CACHING ---
-# Usiamo st.cache_data in app.py wrappando queste funzioni
+# --- DEFAULT CONFIGURATION RICCA ---
+DEFAULT_CASHEW_STRUCTURE = {
+    "Alimentari": {
+        "subs": ["Supermercato", "Minimarket", "Panificio", "Macelleria"],
+        "color": "#4CAF50", "icon": "groceries.png"
+    },
+    "Ristorazione": {
+        "subs": ["Ristorante", "Bar", "Fast Food", "Delivery", "Caffè"],
+        "color": "#FF9800", "icon": "food.png"
+    },
+    "Trasporti": {
+        "subs": ["Carburante", "Mezzi Pubblici", "Treno", "Taxi", "Parcheggio", "Manutenzione", "Assicurazione"],
+        "color": "#F44336", "icon": "car.png"
+    },
+    "Abitazione": {
+        "subs": ["Affitto", "Mutuo", "Luce", "Gas", "Acqua", "Internet", "Condominio", "Riparazioni"],
+        "color": "#795548", "icon": "house.png"
+    },
+    "Shopping": {
+        "subs": ["Abbigliamento", "Elettronica", "Casa", "Hobby", "Libri", "Regali"],
+        "color": "#9C27B0", "icon": "shopping.png"
+    },
+    "Salute & Benessere": {
+        "subs": ["Farmacia", "Medico", "Dentista", "Sport", "Barbiere/Parrucchiere"],
+        "color": "#00BCD4", "icon": "health.png"
+    },
+    "Intrattenimento": {
+        "subs": ["Cinema", "Streaming (Netflix/Spotify)", "Viaggi", "Hotel", "Eventi"],
+        "color": "#E91E63", "icon": "entertainment.png"
+    },
+    "Reddito": {
+        "subs": ["Stipendio", "Rimborsi", "Bonus", "Vendite"],
+        "color": "#2196F3", "icon": "salary.png"
+    },
+    "Finanza": {
+        "subs": ["Tasse", "Multe", "Commissioni", "Investimenti"],
+        "color": "#607D8B", "icon": "bank.png"
+    },
+    "Correzione saldo": {
+        "subs": [],
+        "color": "#9E9E9E", "icon": "charts.png"
+    }
+}
 
 def fix_encoding(text):
     if not isinstance(text, str): return text
@@ -15,25 +56,20 @@ def fix_encoding(text):
     except: return text
 
 def parse_csv_to_models(file_buffer) -> List[WalletTransaction]:
-    """Legge il CSV e restituisce una lista di oggetti Pydantic validati"""
     try:
         df = pd.read_csv(file_buffer, sep=';')
         if len(df.columns) < 2:
             file_buffer.seek(0)
             df = pd.read_csv(file_buffer, sep=',')
     except Exception as e:
-        raise ValueError(f"Impossibile leggere il file: {str(e)}")
+        raise ValueError(f"Impossibile leggere il file. Assicurati sia un CSV valido. Errore: {str(e)}")
 
     transactions = []
     for _, row in df.iterrows():
-        # Pulizia encoding
         clean_row = {k: fix_encoding(v) for k, v in row.to_dict().items()}
-        
-        # Logica transfer
         is_transf = str(clean_row.get('transfer', 'false')).lower() == 'true' or \
                     str(clean_row.get('type', '')).upper() == 'TRANSFER'
         
-        # Creazione Modello
         try:
             t = WalletTransaction(
                 account=clean_row.get('account', 'Unknown'),
@@ -46,51 +82,33 @@ def parse_csv_to_models(file_buffer) -> List[WalletTransaction]:
                 is_transfer=is_transf
             )
             transactions.append(t)
-        except Exception as e:
-            # Skip righe corrotte ma non crashare
-            print(f"Skipping row: {e}")
-            continue
-            
+        except: continue
     return transactions
 
-def ai_suggest_mapping(wallet_cats: List[str], cashew_structure: Dict[str, List[str]]) -> Dict[str, dict]:
-    """
-    Usa 'thefuzz' (Levenshtein Distance) per trovare il match migliore.
-    Restituisce un dizionario: { 'Benzina': {'main': 'Trasporti', 'sub': 'Carburante'} }
-    """
+def ai_suggest_mapping(wallet_cats: List[str], cashew_structure: Dict) -> Dict[str, dict]:
+    """Suggerisce il mapping basandosi sulla struttura complessa (Main -> Subs)"""
     suggestions = {}
-    
-    # Appiattiamo la struttura Cashew per la ricerca: "Trasporti > Carburante"
     flat_cashew = []
-    lookup_map = {} # "Trasporti > Carburante" -> ("Trasporti", "Carburante")
+    lookup_map = {} 
     
-    for main, subs in cashew_structure.items():
-        # Aggiungi categoria madre
+    for main, data in cashew_structure.items():
         flat_cashew.append(main)
         lookup_map[main] = (main, "")
-        for sub in subs:
-            combo = f"{main} {sub}" # Usiamo spazio per matching migliore
+        for sub in data['subs']:
+            combo = f"{main} {sub}"
             flat_cashew.append(combo)
             lookup_map[combo] = (main, sub)
             
     for w_cat in wallet_cats:
-        # Trova il miglior match con score > 60
         best_match, score = process.extractOne(w_cat, flat_cashew)
-        
         if score > 60:
             m, s = lookup_map[best_match]
             suggestions[w_cat] = {"main": m, "sub": s}
         else:
-            # Fallback intelligente su keywords
-            lower_cat = w_cat.lower()
-            if "stipendio" in lower_cat: suggestions[w_cat] = {"main": "Reddito", "sub": "Stipendio"}
-            elif "supermercato" in lower_cat: suggestions[w_cat] = {"main": "Alimentari", "sub": "Supermercato"}
-            else: suggestions[w_cat] = {"main": "Altro", "sub": ""}
-            
+            suggestions[w_cat] = {"main": "Altro", "sub": ""}
     return suggestions
 
-def generate_uuid():
-    return str(uuid.uuid4())
+def generate_uuid(): return str(uuid.uuid4())
 
 def get_ts(date_str):
     try:
