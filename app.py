@@ -1,56 +1,77 @@
 import streamlit as st
 import pandas as pd
 import json
-import difflib
 import uuid
 import datetime
 import time
+import base64
 
-# --- CONFIGURAZIONE PAGINA ---
+# --- 1. CONFIGURAZIONE PAGINA ---
 st.set_page_config(
-    page_title="Ultimate Wallet to Cashew Migrator",
-    page_icon="🚀",
+    page_title="Wallet to Cashew Converter",
+    page_icon="🥥",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# --- CSS & STYLING ---
+# --- 2. SESSION STATE MANAGEMENT (WIZARD LOGIC) ---
+if 'step' not in st.session_state: st.session_state.step = 1
+if 'df_wallet' not in st.session_state: st.session_state.df_wallet = None
+if 'cashew_struct' not in st.session_state:
+    st.session_state.cashew_struct = {
+        "Alimentari": ["Supermercato", "Minimarket", "Panificio"],
+        "Ristorazione": ["Ristorante", "Bar", "Fast Food", "Delivery"],
+        "Trasporti": ["Carburante", "Treno/Bus", "Parcheggio", "Manutenzione", "Assicurazione"],
+        "Shopping": ["Abbigliamento", "Elettronica", "Casa", "Hobby"],
+        "Abitazione": ["Affitto/Mutuo", "Luce", "Gas", "Acqua", "Internet"],
+        "Salute": ["Farmacia", "Visite Mediche", "Sport"],
+        "Intrattenimento": ["Cinema", "Streaming", "Viaggi", "Eventi"],
+        "Reddito": ["Stipendio", "Rimborsi", "Bonus"],
+        "Correzione saldo": [],
+        "Altro": []
+    }
+if 'mapping_config' not in st.session_state: st.session_state.mapping_config = {}
+if 'account_config' not in st.session_state: st.session_state.account_config = {}
+if 'import_mode' not in st.session_state: st.session_state.import_mode = "SQL"
+
+# --- 3. CSS & DESIGN SYSTEM ---
 st.markdown("""
 <style>
-    .stApp { background-color: #f8f9fa; }
-    .main-header { font-size: 2.5rem; color: #2c3e50; font-weight: 800; }
-    .sub-header { font-size: 1.2rem; color: #7f8c8d; margin-bottom: 20px; }
-    .card { background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 15px; }
-    .pro-badge { background-color: #e3f2fd; color: #1565c0; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
-    .vs-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-    .vs-table th { text-align: left; background: #eee; padding: 8px; }
-    .vs-table td { border-bottom: 1px solid #ddd; padding: 8px; }
+    /* Global Styles mimicking Cashew App */
+    .stApp { background-color: #F2F6F8; font-family: 'Segoe UI', sans-serif; }
+    
+    /* Wizard Progress Bar */
+    .wizard-container { display: flex; justify-content: space-between; margin-bottom: 30px; background: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.03); }
+    .step-item { font-weight: bold; color: #B0BEC5; font-size: 0.9rem; }
+    .step-active { color: #4CAF50; border-bottom: 3px solid #4CAF50; padding-bottom: 5px; }
+    
+    /* Cards for Mapping */
+    .mapping-card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 16px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.04);
+        border: 1px solid #E0E0E0;
+        margin-bottom: 15px;
+        transition: transform 0.2s;
+    }
+    .mapping-card:hover { border-color: #4CAF50; transform: translateY(-2px); }
+    
+    .card-header { font-weight: 700; color: #37474F; font-size: 1.1rem; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+    .wallet-badge { background-color: #ECEFF1; color: #455A64; padding: 4px 8px; border-radius: 8px; font-size: 0.8rem; }
+    
+    /* Custom Buttons */
+    div.stButton > button:first-child { border-radius: 12px; height: 3em; font-weight: 600; border: none; transition: 0.3s; }
+    .primary-btn { background-color: #4CAF50 !important; color: white !important; }
+    
+    /* Headings */
+    h1, h2, h3 { color: #263238; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOGICA CORE ---
-
-def generate_uuid():
-    return str(uuid.uuid4())
-
-def get_timestamp_ms(date_str):
-    """Converte stringa data (YYYY-MM-DD HH:MM:SS) in Unix Timestamp MS"""
-    try:
-        if pd.isna(date_str): return int(time.time() * 1000)
-        # Tenta formati comuni
-        formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M"]
-        dt_obj = None
-        for fmt in formats:
-            try:
-                dt_obj = datetime.datetime.strptime(str(date_str)[:19], fmt)
-                break
-            except: pass
-        
-        if dt_obj:
-            return int(dt_obj.timestamp() * 1000)
-        return int(time.time() * 1000)
-    except:
-        return int(time.time() * 1000)
+# --- 4. FUNZIONI UTILI ---
+def next_step(): st.session_state.step += 1
+def prev_step(): st.session_state.step -= 1
 
 def fix_encoding(text):
     if not isinstance(text, str): return text
@@ -59,6 +80,7 @@ def fix_encoding(text):
 
 def parse_amount(value):
     if isinstance(value, (int, float)): return float(value)
+    if pd.isna(value) or value == '': return 0.0
     val_str = str(value).replace('€', '').replace('$', '').strip()
     if ',' in val_str and '.' in val_str:
         if val_str.rfind(',') > val_str.rfind('.'): val_str = val_str.replace('.', '').replace(',', '.')
@@ -67,396 +89,391 @@ def parse_amount(value):
     try: return float(val_str)
     except: return 0.0
 
+def generate_uuid(): return str(uuid.uuid4())
+
+def get_timestamp_ms(date_str):
+    try:
+        formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M"]
+        for fmt in formats:
+            try: return int(datetime.datetime.strptime(str(date_str)[:19], fmt).timestamp() * 1000)
+            except: pass
+        return int(time.time() * 1000)
+    except: return int(time.time() * 1000)
+
 def smart_style_guess(name):
-    """Restituisce (colore, icona) basandosi sul nome"""
     name = name.lower()
-    
-    # Mappatura keywords -> (Icona Cashew, Colore Hex)
-    keywords = {
-        "cibo": ("food.png", "#4CAF50"), "mangiare": ("food.png", "#4CAF50"), "ristorante": ("restaurant.png", "#FF9800"),
+    mapping = {
+        "cibo": ("food.png", "#4CAF50"), "ristorante": ("restaurant.png", "#FF9800"), "bar": ("cafe.png", "#795548"),
         "spesa": ("groceries.png", "#8BC34A"), "alimentari": ("groceries.png", "#8BC34A"),
         "auto": ("car.png", "#F44336"), "benzina": ("fuel.png", "#D32F2F"), "trasporti": ("bus.png", "#E91E63"),
-        "casa": ("house.png", "#795548"), "bollette": ("bills.png", "#FF5722"), "affitto": ("house.png", "#795548"),
-        "salute": ("health.png", "#00BCD4"), "farmacia": ("health.png", "#00BCD4"),
+        "casa": ("house.png", "#607D8B"), "bollette": ("bills.png", "#FF5722"), "affitto": ("house.png", "#607D8B"),
+        "salute": ("health.png", "#00BCD4"), "farmacia": ("pills.png", "#00BCD4"),
         "shopping": ("shopping.png", "#9C27B0"), "vestiti": ("clothes.png", "#673AB7"),
-        "stipendio": ("salary.png", "#2196F3"), "reddito": ("money.png", "#4CAF50"),
-        "divertimento": ("entertainment.png", "#FFC107"), "viaggi": ("plane.png", "#03A9F4"),
-        "regali": ("gift.png", "#E91E63"), "sport": ("sport.png", "#FFEB3B")
+        "stipendio": ("salary.png", "#2196F3"), "viaggi": ("plane.png", "#03A9F4"), "regali": ("gift.png", "#E91E63")
     }
-    
-    for k, v in keywords.items():
-        if k in name:
-            return v
-    
-    return ("category_default.png", "#9E9E9E") # Default grigio
+    for k, v in mapping.items():
+        if k in name: return v
+    return ("category_default.png", "#9E9E9E")
 
-# --- STRUTTURA DATABASE CASHEW (Scheletro) ---
-# Usiamo questo per inizializzare le categorie
-DEFAULT_STRUCTURE = {
-    "Alimentari": ["Supermercato", "Minimarket"],
-    "Mangiare fuori": ["Ristorante", "Bar", "Fast Food"],
-    "Trasporti": ["Benzina", "Treno", "Bus", "Manutenzione"],
-    "Shopping": ["Abbigliamento", "Elettronica", "Casa"],
-    "Casa & Bollette": ["Luce", "Gas", "Internet", "Affitto"],
-    "Salute & Benessere": ["Farmacia", "Medico", "Sport"],
-    "Divertimento": ["Cinema", "Hobby", "Viaggi"],
-    "Reddito": ["Stipendio", "Rimborsi", "Extra"],
-    "Altro": []
-}
+# --- 5. PROGRESS WIZARD UI ---
+def render_wizard_header():
+    steps = ["1. Upload", "2. Struttura", "3. Mappatura", "4. Export"]
+    cols = st.columns(len(steps))
+    with st.container():
+        st.markdown('<div class="wizard-container">', unsafe_allow_html=True)
+        html = ""
+        for i, s in enumerate(steps):
+            active_class = "step-active" if (i + 1) == st.session_state.step else ""
+            html += f'<span class="step-item {active_class}">{s}</span>'
+            if i < len(steps) - 1: html += '<span style="color:#ddd;"> &nbsp; ➔ &nbsp; </span>'
+        st.markdown(html + '</div>', unsafe_allow_html=True)
 
-# --- HEADER APP ---
-st.markdown('<div class="main-header">🚀 Ultimate Migrator: Wallet ➡ Cashew</div>', unsafe_allow_html=True)
+render_wizard_header()
 
-# --- STEP 0: SCELTA FORMATO (CRUCIALE) ---
-with st.container():
-    st.markdown("### 🛠️ Step 1: Scegli il metodo di importazione")
-    st.markdown("Prima di iniziare, decidi come vuoi importare i dati. Leggi attentamente le differenze.")
+# =================================================================================
+# STEP 1: UPLOAD & SETUP
+# =================================================================================
+if st.session_state.step == 1:
+    col1, col2 = st.columns([1, 1])
     
-    col_mode1, col_mode2 = st.columns(2)
-    
-    mode = st.radio("Seleziona Modalità:", ["SQL (Consigliato - Reset Totale)", "CSV (Base - Aggiunta)"], horizontal=True)
-    
-    is_sql_mode = "SQL" in mode
-
-    with st.expander("ℹ️ Confronto dettagliato tra SQL e CSV (Clicca per leggere)", expanded=True):
+    with col1:
+        st.title("Benvenuto in Cashew Migrator")
         st.markdown("""
-        | Caratteristica | 🏆 SQL (Backup Restore) | 📄 CSV (Import Standard) |
-        | :--- | :--- | :--- |
-        | **Risultato Finale** | **App pulita e perfetta** | Dati aggiunti all'esistente |
-        | **Trasferimenti** | ✅ **Uniti e collegati** | ⚠️ Due transazioni separate |
-        | **Categorie** | ✅ Colori e Icone personalizzati | ❌ Solo nomi (colori casuali) |
-        | **Gerarchia** | ✅ Categorie e Sottocategorie native | ⚠️ Spesso appiattite o da sistemare |
-        | **Conti** | ✅ Supporto Valuta multipla | ✅ Supporto base |
-        | **Rischio** | ⚠️ **Sovrascrive i dati attuali** | ✅ Aggiunge senza cancellare |
+        Trasforma il tuo storico finanziario di **Wallet** in un formato perfetto per **Cashew**.
+        
+        Questa app permette di:
+        - 🔗 **Unire i trasferimenti** automaticamente.
+        - 🎨 **Personalizzare** colori e icone.
+        - 📂 Creare una struttura di **sottocategorie** gerarchica.
         """)
         
-    if is_sql_mode:
-        st.warning("⚠️ **ATTENZIONE:** L'importazione SQL sostituirà completamente il database attuale di Cashew. Usalo se vuoi partire con una installazione pulita importando tutto il tuo storico.")
-    else:
-        st.info("ℹ️ Il CSV è utile se vuoi solo aggiungere vecchie transazioni a un utilizzo già in corso di Cashew.")
+        st.info("💡 **Consiglio:** Usa la modalità SQL per ottenere un database pulito e nativo.")
 
-# --- STEP 1: CARICAMENTO FILE ---
-st.markdown("### 📂 Step 2: Carica Export Wallet")
-uploaded_file = st.file_uploader("Carica `wallet.csv`", type=['csv'])
-
-if uploaded_file:
-    # Lettura
-    try:
-        df = pd.read_csv(uploaded_file, sep=';')
-        if len(df.columns) < 2:
-            uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, sep=',')
+    with col2:
+        st.markdown("### 🛠️ Configurazione Iniziale")
         
-        # Pulizia base
-        for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].apply(fix_encoding)
-        df['amount_clean'] = df['amount'].apply(parse_amount)
+        # Scelta Modalità con UI migliorata
+        mode_sel = st.radio("Metodo di Importazione", ["SQL (Consigliato - Reset Totale)", "CSV (Base - Aggiunta)"], index=0)
+        st.session_state.import_mode = "SQL" if "SQL" in mode_sel else "CSV"
         
-        unique_cats = sorted(df['category'].dropna().unique().tolist())
-        unique_accs = sorted(df['account'].dropna().unique().tolist())
+        if st.session_state.import_mode == "SQL":
+            st.warning("⚠️ Il file SQL sostituirà interamente il database attuale di Cashew.")
         
-        st.success(f"File letto: {len(df)} transazioni trovate.")
+        # Upload
+        uploaded_file = st.file_uploader("Trascina qui il file `wallet.csv`", type=['csv'])
+        
+        if uploaded_file:
+            try:
+                df = pd.read_csv(uploaded_file, sep=';')
+                if len(df.columns) < 2:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file, sep=',')
+                
+                # Pre-processing
+                for col in df.select_dtypes(include=['object']).columns:
+                    df[col] = df[col].apply(fix_encoding)
+                df['amount_clean'] = df['amount'].apply(parse_amount)
+                
+                st.session_state.df_wallet = df
+                st.success(f"✅ File caricato: {len(df)} transazioni trovate.")
+                
+                if st.button("Inizia Configurazione ➔", type="primary"):
+                    next_step()
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Errore nel file: {e}")
 
-    except Exception as e:
-        st.error(f"Errore: {e}")
-        st.stop()
-
-    # --- STEP 3: MAPPATURA (UI DINAMICA) ---
+# =================================================================================
+# STEP 2: STRUTTURA CATEGORIE (GERARCHICA)
+# =================================================================================
+elif st.session_state.step == 2:
+    st.title("📂 Struttura Categorie Cashew")
+    st.markdown("Prima di mappare, definiamo **quali categorie** vuoi avere su Cashew. Organizzale come preferisci.")
     
-    # 3.1 SETUP STRUTTURA CATEGORIE (Comune a SQL e CSV)
-    st.markdown("### 🎨 Step 3: Categorie & Stile")
-    st.markdown("Definisci la struttura delle categorie su Cashew.")
+    col_help, col_editor = st.columns([1, 2])
     
-    # Init session state structure
-    if 'cashew_struct' not in st.session_state:
-        st.session_state.cashew_struct = DEFAULT_STRUCTURE
+    with col_help:
+        st.markdown("""
+        **Come funziona:**
+        1. Nella tabella a destra, scrivi le categorie principali (es. *Alimentari*).
+        2. Accanto, scrivi la sottocategoria (es. *Supermercato*).
+        3. Se una categoria non ha sottocategorie, lascia la seconda colonna vuota.
+        
+        ✨ *Puoi fare copia-incolla da Excel!*
+        """)
+        st.image("https://play-lh.googleusercontent.com/yvC8ZqgSqa6eHjKzLzFzXGzZq4xGqKqgZq4xGqKqgZq4xGqKqg=w240-h480-rw", width=150, caption="Stile Cashew")
 
-    # Editor Struttura
-    with st.expander("Gestisci Struttura Categorie (Aggiungi/Rimuovi)", expanded=False):
-        # Flatten for editor
-        flat_list = []
-        for m, subs in st.session_state.cashew_struct.items():
-            if not subs: flat_list.append({"Main": m, "Sub": ""})
-            for s in subs: flat_list.append({"Main": m, "Sub": s})
+    with col_editor:
+        # Converti dict in df per l'editor
+        current_data = []
+        for main, subs in st.session_state.cashew_struct.items():
+            if not subs: current_data.append({"Categoria Madre": main, "Sottocategoria": ""})
+            for s in subs: current_data.append({"Categoria Madre": main, "Sottocategoria": s})
         
-        edited_df = st.data_editor(pd.DataFrame(flat_list), num_rows="dynamic", use_container_width=True)
+        df_struct = pd.DataFrame(current_data)
+        edited_df = st.data_editor(df_struct, num_rows="dynamic", use_container_width=True, height=400)
         
-        # Rebuild
+    c1, c2 = st.columns([1, 5])
+    if c1.button("⬅ Indietro"):
+        prev_step()
+        st.rerun()
+    if c2.button("Conferma Struttura e Procedi ➔", type="primary"):
+        # Salva struttura
         new_struct = {}
-        for _, r in edited_df.iterrows():
-            m, s = r['Main'].strip(), r['Sub'].strip() if r['Sub'] else ""
+        for _, row in edited_df.iterrows():
+            m = str(row["Categoria Madre"]).strip()
+            s = str(row["Sottocategoria"]).strip()
             if m:
                 if m not in new_struct: new_struct[m] = []
                 if s and s not in new_struct[m]: new_struct[m].append(s)
         st.session_state.cashew_struct = new_struct
+        next_step()
+        st.rerun()
 
-    # Mappatura Wallet -> Cashew
-    st.markdown("#### Collega le categorie di Wallet")
-    mapping_res = {} # Key: wallet_cat -> Val: {main, sub, color, icon}
+# =================================================================================
+# STEP 3: MAPPATURA VISIVA (CARDS)
+# =================================================================================
+elif st.session_state.step == 3:
+    st.title("🎨 Mappatura Intelligente")
+    st.markdown("Collega le categorie di Wallet a quelle di Cashew che hai appena definito.")
     
-    col_search, _ = st.columns([1,2])
-    search_q = col_search.text_input("Cerca categoria...", "")
+    # 1. MAPPATURA CONTI
+    with st.expander("💳 Configurazione Conti (Clicca per espandere)", expanded=True):
+        unique_accs = sorted(st.session_state.df_wallet['account'].dropna().unique().tolist())
+        cols = st.columns(len(unique_accs) if len(unique_accs) < 4 else 3)
+        for i, acc in enumerate(unique_accs):
+            with cols[i % 3]:
+                st.markdown(f"**{acc}**")
+                n_name = st.text_input("Nome su Cashew", value=acc, key=f"n_{acc}", label_visibility="collapsed")
+                n_curr = "EUR"
+                n_col = "#607D8B"
+                if st.session_state.import_mode == "SQL":
+                    c_cur, c_col = st.columns(2)
+                    n_curr = c_cur.selectbox("Valuta", ["EUR", "USD", "GBP"], key=f"c_{acc}", label_visibility="collapsed")
+                    n_col = c_col.color_picker("Colore", "#607D8B", key=f"cl_{acc}", label_visibility="collapsed")
+                
+                st.session_state.account_config[acc] = {"name": n_name, "currency": n_curr, "color": n_col}
+
+    # 2. MAPPATURA CATEGORIE (GRID VIEW)
+    st.markdown("---")
+    st.subheader("Collega Categorie")
     
-    # Container mappatura
-    with st.container(height=500):
-        cats_to_show = [c for c in unique_cats if search_q.lower() in c.lower()]
+    unique_cats = sorted(st.session_state.df_wallet['category'].dropna().unique().tolist())
+    search = st.text_input("🔍 Cerca categoria...", placeholder="Digita per filtrare...")
+    
+    filtered_cats = [c for c in unique_cats if search.lower() in c.lower()]
+    
+    # Grid Layout Logic
+    cols_per_row = 3
+    rows = [filtered_cats[i:i + cols_per_row] for i in range(0, len(filtered_cats), cols_per_row)]
+
+    for row_cats in rows:
+        cols = st.columns(cols_per_row)
+        for idx, w_cat in enumerate(row_cats):
+            with cols[idx]:
+                # CARD CONTAINER START
+                st.markdown(f"""
+                <div class="mapping-card">
+                    <div class="card-header">
+                        <span>{w_cat}</span>
+                        <span class="wallet-badge">Wallet</span>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Logic inside card
+                guess_icon, guess_color = smart_style_guess(w_cat)
+                
+                # Main Category Select
+                main_opts = list(st.session_state.cashew_struct.keys())
+                # Smart Match
+                def_idx = 0
+                for i, m in enumerate(main_opts):
+                    if w_cat.lower() in m.lower(): def_idx = i; break
+                
+                sel_main = st.selectbox("Categoria", main_opts, index=def_idx, key=f"m_{w_cat}", label_visibility="collapsed")
+                
+                # Sub Category Select
+                sub_opts = [""] + st.session_state.cashew_struct.get(sel_main, [])
+                sel_sub = st.selectbox("Sottocategoria", sub_opts, key=f"s_{w_cat}", label_visibility="collapsed", placeholder="Sottocategoria...")
+                
+                # SQL Extras
+                sel_col = guess_color
+                sel_ico = guess_icon
+                if st.session_state.import_mode == "SQL":
+                    c_style1, c_style2 = st.columns([1, 3])
+                    sel_col = c_style1.color_picker("Colore", guess_color, key=f"co_{w_cat}", label_visibility="collapsed")
+                    sel_ico = c_style2.text_input("Icona (.png)", value=guess_icon, key=f"ic_{w_cat}", label_visibility="collapsed")
+                
+                # Save to session
+                st.session_state.mapping_config[w_cat] = {
+                    "main": sel_main, "sub": sel_sub, "color": sel_col, "icon": sel_ico
+                }
+                
+                st.markdown("</div>", unsafe_allow_html=True) 
+                # CARD CONTAINER END
+
+    c1, c2 = st.columns([1, 5])
+    if c1.button("⬅ Indietro"):
+        prev_step()
+        st.rerun()
+    if c2.button("Genera File Finale 🚀", type="primary"):
+        next_step()
+        st.rerun()
+
+# =================================================================================
+# STEP 4: EXPORT & DOWNLOAD
+# =================================================================================
+elif st.session_state.step == 4:
+    st.title("🎉 Tutto Pronto!")
+    st.markdown("Il tuo file di migrazione è stato generato.")
+    
+    df = st.session_state.df_wallet
+    mapping = st.session_state.mapping_config
+    accs = st.session_state.account_config
+    is_sql = st.session_state.import_mode == "SQL"
+    
+    # --- LOGICA DI GENERAZIONE ---
+    
+    if is_sql:
+        # SQL GENERATION LOGIC
+        script = "BEGIN TRANSACTION;\nDELETE FROM wallets;\nDELETE FROM categories;\nDELETE FROM transactions;\n"
         
-        for w_cat in cats_to_show:
-            st.markdown(f"**{w_cat}**")
-            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+        # UUID Maps
+        cat_uuids = {} 
+        acc_uuids = {}
+        now_ms = int(time.time() * 1000)
+        
+        # 1. Wallets
+        for orig_acc, conf in accs.items():
+            uid = generate_uuid()
+            acc_uuids[orig_acc] = uid
+            script += f"INSERT INTO \"wallets\" VALUES('{uid}','{conf['name']}',{conf['color']},{now_ms},1,0,'{conf['currency']}',0,0,NULL,NULL);\n"
             
-            # Smart Guess
-            guess_icon, guess_color = smart_style_guess(w_cat)
+        # 2. Categories
+        processed_main = set()
+        # Create Main
+        for w_cat, conf in mapping.items():
+            m_name = conf['main']
+            if m_name not in processed_main:
+                uid = generate_uuid()
+                cat_uuids[(m_name, "")] = uid
+                script += f"INSERT INTO \"categories\" VALUES('{uid}','{m_name}','{conf['color']}','{conf['icon']}',NULL,{now_ms},1765015012,0,0,0,NULL);\n"
+                processed_main.add(m_name)
+        # Create Subs
+        for w_cat, conf in mapping.items():
+            m_name = conf['main']
+            s_name = conf['sub']
+            if s_name:
+                key = (m_name, s_name)
+                if key not in cat_uuids:
+                    uid = generate_uuid()
+                    cat_uuids[key] = uid
+                    p_uid = cat_uuids.get((m_name, ""), "0")
+                    script += f"INSERT INTO \"categories\" VALUES('{uid}','{s_name}',NULL,NULL,NULL,{now_ms},1765015012,0,0,0,'{p_uid}');\n"
+
+        # 3. Transactions
+        trans_list = []
+        for idx, row in df.iterrows():
+            w_cat = row.get('category', '')
+            conf = mapping.get(w_cat, {"main": "Altro", "sub": ""})
             
-            # Select Main
-            main_opts = list(st.session_state.cashew_struct.keys())
-            # Simple match
-            def_idx = 0
-            for i, m in enumerate(main_opts):
-                if w_cat.lower() in m.lower(): def_idx = i; break
+            # IDs
+            w_fk = acc_uuids.get(row.get('account'), "0")
+            c_fk = cat_uuids.get((conf['main'], conf['sub']))
+            if not c_fk: c_fk = cat_uuids.get((conf['main'], ""), "0")
             
-            sel_main = c1.selectbox("Categoria", main_opts, index=def_idx, key=f"m_{w_cat}", label_visibility="collapsed")
+            # Info
+            is_transf = str(row.get('transfer', 'false')).lower() == 'true' or str(row.get('type', '')).upper() == 'TRANSFER'
+            note = str(row.get('note', ''))
+            payee = str(row.get('payee', ''))
+            if payee and payee != 'nan': note += f" | {payee}"
             
-            # Select Sub
-            sub_opts = [""] + st.session_state.cashew_struct.get(sel_main, [])
-            sel_sub = c2.selectbox("Sotto-Cat", sub_opts, key=f"s_{w_cat}", label_visibility="collapsed")
-            
-            # Extra SQL options
-            sel_color = guess_color
-            sel_icon = guess_icon
-            
-            if is_sql_mode:
-                sel_color = c3.color_picker("Colore", value=guess_color, key=f"col_{w_cat}", label_visibility="collapsed")
-                # Icon text input (sarebbe troppo lungo fare un selectbox con tutte le icone)
-                sel_icon = c4.text_input("Icona (.png)", value=guess_icon, key=f"ico_{w_cat}", label_visibility="collapsed", help="Es: food.png, car.png, shopping.png")
-            
-            mapping_res[w_cat] = {
-                "main": sel_main, "sub": sel_sub, 
-                "color": sel_color, "icon": sel_icon
+            t_obj = {
+                "id": generate_uuid(),
+                "date": get_timestamp_ms(row.get('date', '')),
+                "amount": row['amount_clean'],
+                "title": conf['main'],
+                "note": note,
+                "w_fk": w_fk,
+                "c_fk": c_fk,
+                "is_transfer": is_transf,
+                "paired": "NULL"
             }
-            st.divider()
-
-    # 3.2 SETUP ACCOUNT (CONTI)
-    st.markdown("### 💳 Step 4: Conti e Valute")
-    acc_config = {}
-    
-    col_accs = st.columns(2)
-    for i, acc in enumerate(unique_accs):
-        with col_accs[i % 2]:
-            st.markdown(f"Conto Originale: **{acc}**")
-            c_name, c_curr, c_col = st.columns([2, 1, 1])
+            trans_list.append(t_obj)
             
-            n_name = c_name.text_input("Nome Cashew", value=acc, key=f"an_{acc}")
-            n_curr = "EUR"
-            n_color = "#607D8B"
-            
-            if is_sql_mode:
-                n_curr = c_curr.selectbox("Valuta", ["EUR", "USD", "GBP", "CHF"], key=f"ac_{acc}")
-                n_color = c_col.color_picker("Colore", value="#607D8B", key=f"acol_{acc}")
-            
-            acc_config[acc] = {"name": n_name, "currency": n_curr, "color": n_color}
-            st.write("---")
-
-    # --- STEP 4: GENERAZIONE ---
-    st.markdown("### 🚀 Step 5: Generazione File")
-    
-    if st.button("GENERA FILE DI MIGRAZIONE", type="primary"):
+        # Pairing Logic
+        matched = set()
+        for i, t1 in enumerate(trans_list):
+            if t1['is_transfer'] and t1['id'] not in matched:
+                for j, t2 in enumerate(trans_list):
+                    if i==j or t2['id'] in matched or not t2['is_transfer']: continue
+                    if abs(t1['amount'] + t2['amount']) < 0.01 and abs(t1['date'] - t2['date']) < 60000:
+                        t1['paired'] = f"'{t2['id']}'"
+                        t2['paired'] = f"'{t1['id']}'"
+                        t1['title'] = "Trasferimento"
+                        t2['title'] = "Trasferimento"
+                        matched.add(t1['id'])
+                        matched.add(t2['id'])
+                        break
         
-        # --- GENERATORE CSV CLASSICO ---
-        if not is_sql_mode:
-            csv_rows = []
-            for _, row in df.iterrows():
-                # ... (Logica CSV simile alla precedente versione) ...
-                # Semplificata per brevità qui, userà mapping_res
-                w_cat = row.get('category', '')
-                map_data = mapping_res.get(w_cat, {"main": "Altro", "sub": ""})
-                
-                new_row = {
-                    "account": acc_config.get(row.get('account'), {}).get('name', row.get('account')),
-                    "amount": row['amount_clean'],
-                    "currency": row.get('currency', 'EUR'),
-                    "title": w_cat,
-                    "note": str(row.get('note', '')),
-                    "date": row.get('date', ''),
-                    "income": str(row['amount_clean'] > 0).lower(),
-                    "category name": map_data['main'],
-                    "subcategory name": map_data['sub']
-                }
-                csv_rows.append(new_row)
+        # Write Trans
+        for t in trans_list:
+            clean_note = t['note'].replace("'", "''")
+            clean_title = t['title'].replace("'", "''")
+            inc = 1 if t['amount'] > 0 else 0
+            script += f"INSERT INTO \"transactions\" VALUES('{t['id']}',{t['paired']},'{clean_title}',{t['amount']},'{clean_note}','{t['c_fk']}',NULL,'{t['w_fk']}',{t['date']},1765015012,1765015012,{inc},NULL,NULL,NULL,1,NULL,1,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);\n"
             
-            res_df = pd.DataFrame(csv_rows)
-            st.download_button("Scarica CSV", res_df.to_csv(index=False), "cashew_import.csv", "text/csv")
-            
-        # --- GENERATORE SQL (POWER MODE) ---
-        else:
-            st.info("⏳ Elaborazione SQL in corso... Creazione database virtuale...")
-            
-            # 1. Preparazione UUIDs per Categorie e Conti
-            # Mappa (MainCat, SubCat) -> UUID
-            cat_uuids = {} 
-            acc_uuids = {}
-            
-            sql_script = "BEGIN TRANSACTION;\n"
-            
-            # --- TABELLA WALLETS (Conti) ---
-            sql_script += "-- WALLETS --\n"
-            sql_script += "DELETE FROM wallets;\n"
-            
-            for orig_acc, conf in acc_config.items():
-                w_uuid = generate_uuid()
-                acc_uuids[orig_acc] = w_uuid
-                now_ms = int(time.time() * 1000)
-                
-                # INSERT wallet
-                sql_script += f"INSERT INTO \"wallets\" VALUES('{w_uuid}','{conf['name']}',{conf['color']},{now_ms},1,0,'{conf['currency']}',0,0,NULL,NULL);\n"
+        script += "COMMIT;"
+        final_data = script
+        file_name = "cashew_restore.sql"
+        mime = "text/x-sql"
+        
+    else:
+        # CSV MODE (Semplificata)
+        out_rows = []
+        for _, row in df.iterrows():
+            w_cat = row.get('category', '')
+            conf = mapping.get(w_cat, {"main": "Altro", "sub": ""})
+            acc_info = accs.get(row.get('account'), {})
+            out_rows.append({
+                "account": acc_info.get("name", row.get('account')),
+                "amount": row['amount_clean'],
+                "currency": "EUR",
+                "title": conf['main'],
+                "note": str(row.get('note', '')),
+                "date": row.get('date', ''),
+                "category name": conf['main'],
+                "subcategory name": conf['sub']
+            })
+        final_data = pd.DataFrame(out_rows).to_csv(index=False)
+        file_name = "cashew_import.csv"
+        mime = "text/csv"
 
-            # --- TABELLA CATEGORIES ---
-            sql_script += "\n-- CATEGORIES --\n"
-            sql_script += "DELETE FROM categories;\n"
-            
-            # Dobbiamo creare prima le MAIN, poi le SUB
-            processed_main = set()
-            
-            # Analizziamo tutte le categorie mappate per assicurarci di creare tutto
-            # Prima passata: Crea Main Categories univoche
-            for w_cat, conf in mapping_res.items():
-                m_name = conf['main']
-                if m_name not in processed_main:
-                    m_uuid = generate_uuid()
-                    cat_uuids[(m_name, "")] = m_uuid # Key: (Main, "")
-                    now_ms = int(time.time() * 1000)
-                    
-                    # Colore/Icona prendiamo dal primo che capita o default
-                    m_col = conf['color'] 
-                    m_ico = conf['icon']
-                    
-                    sql_script += f"INSERT INTO \"categories\" VALUES('{m_uuid}','{m_name}','{m_col}','{m_ico}',NULL,{now_ms},1765015012,0,0,0,NULL);\n"
-                    processed_main.add(m_name)
-            
-            # Seconda passata: Crea Sub Categories
-            for w_cat, conf in mapping_res.items():
-                m_name = conf['main']
-                s_name = conf['sub']
-                
-                if s_name:
-                    s_key = (m_name, s_name)
-                    if s_key not in cat_uuids:
-                        s_uuid = generate_uuid()
-                        cat_uuids[s_key] = s_uuid
-                        parent_uuid = cat_uuids.get((m_name, ""), "0")
-                        now_ms = int(time.time() * 1000)
-                        
-                        # Subcat eredita stile o custom? Cashew le subcat spesso non hanno icona, usano la main
-                        sql_script += f"INSERT INTO \"categories\" VALUES('{s_uuid}','{s_name}',NULL,NULL,NULL,{now_ms},1765015012,0,0,0,'{parent_uuid}');\n"
-
-            # --- TABELLA TRANSACTIONS ---
-            sql_script += "\n-- TRANSACTIONS --\n"
-            sql_script += "DELETE FROM transactions;\n"
-            
-            # Pre-processing per Transfers
-            # Dobbiamo identificare le coppie.
-            # Convertiamo df in lista di dict per manipolazione facile
-            trans_list = []
-            
-            for idx, row in df.iterrows():
-                # Dati base
-                orig_acc = row.get('account')
-                amount = row['amount_clean']
-                date_str = row.get('date', '')
-                ts = get_timestamp_ms(date_str)
-                is_transfer = str(row.get('transfer', 'false')).lower() == 'true' or str(row.get('type', '')).upper() == 'TRANSFER'
-                
-                # Categoria ID
-                w_cat = row.get('category', '')
-                map_conf = mapping_res.get(w_cat, {"main": "Altro", "sub": ""})
-                
-                # Recupera UUID categoria
-                # Se c'è sub, usa sub UUID, altrimenti Main UUID
-                cat_key = (map_conf['main'], map_conf['sub'])
-                cat_fk = cat_uuids.get(cat_key)
-                if not cat_fk: 
-                    cat_fk = cat_uuids.get((map_conf['main'], ""), "0") # Fallback main
-                
-                # Wallet FK
-                w_fk = acc_uuids.get(orig_acc, "0")
-                
-                t_uuid = generate_uuid()
-                
-                trans_obj = {
-                    "id": t_uuid,
-                    "date_ms": ts,
-                    "amount": amount,
-                    "note": str(row.get('note', '')),
-                    "payee": str(row.get('payee', '')),
-                    "wallet_fk": w_fk,
-                    "category_fk": cat_fk,
-                    "is_transfer": is_transfer,
-                    "orig_idx": idx, # Per debugging
-                    "paired_id": "NULL",
-                    "title": map_conf['main'] # Titolo = Nome categoria come richiesto
-                }
-                trans_list.append(trans_obj)
-
-            # Logic Pairing Transfer
-            # Cerchiamo transazioni con stesso importo assoluto, stessa data (approx), conti diversi, flag transfer
-            # Per semplicità, iteriamo e cerchiamo match
-            matched_ids = set()
-            
-            for i, t1 in enumerate(trans_list):
-                if t1['is_transfer'] and t1['id'] not in matched_ids:
-                    # Cerca il suo paio
-                    for j, t2 in enumerate(trans_list):
-                        if i == j: continue
-                        if t2['id'] in matched_ids: continue
-                        if not t2['is_transfer']: continue
-                        
-                        # Logica match: Somma deve essere 0 (es. -50 e +50), date vicine
-                        # Wallet export ha date precise al secondo, dovrebbero matchare
-                        # Per sicurezza usiamo un delta di 60 secondi
-                        amount_match = abs(t1['amount'] + t2['amount']) < 0.01
-                        time_match = abs(t1['date_ms'] - t2['date_ms']) < 60000 
-                        
-                        if amount_match and time_match:
-                            # Trovato!
-                            t1['paired_id'] = f"'{t2['id']}'"
-                            t2['paired_id'] = f"'{t1['id']}'"
-                            t1['title'] = "Trasferimento"
-                            t2['title'] = "Trasferimento"
-                            # Per i transfer la categoria è meglio "Correzione saldo" (se esiste) o vuota
-                            # Qui lasciamo quella mappata o forziamo se vuoi
-                            
-                            matched_ids.add(t1['id'])
-                            matched_ids.add(t2['id'])
-                            break
-
-            # Scrittura SQL Transazioni
-            for t in trans_list:
-                # Componi note
-                final_note = t['note']
-                if t['payee'] and t['payee'] != 'nan':
-                     final_note += f" | {t['payee']}"
-                
-                # Escape stringhe SQL
-                final_note = final_note.replace("'", "''")
-                title = t['title'].replace("'", "''")
-                
-                income_flag = 1 if t['amount'] > 0 else 0
-                
-                sql = f"""INSERT INTO "transactions" VALUES('{t['id']}',{t['paired_id']},'{title}',{t['amount']},'{final_note}','{t['category_fk']}',NULL,'{t['wallet_fk']}',{t['date_ms']},1765015012,1765015012,{income_flag},NULL,NULL,NULL,1,NULL,1,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);"""
-                sql_script += sql + "\n"
-                
-            sql_script += "COMMIT;\n"
-            
-            st.balloons()
-            st.success("✅ File SQL Generato con successo!")
-            st.download_button("💾 SCARICA BACKUP SQL (cashew_restore.sql)", sql_script, "cashew_restore.sql", "text/x-sql")
-            
-            st.warning("""
-            **Come importare su Cashew:**
-            1. Scarica il file `.sql`.
-            2. Apri Cashew sul telefono.
-            3. Vai su **Impostazioni** > **Backup e Ripristino**.
-            4. Seleziona **Ripristina Backup**.
-            5. Scegli questo file.
-            (Nota: Cashew potrebbe richiedere che il file sia zippato o avere estensione .backup a seconda della versione, prova prima così).
+    # --- UI DOWNLOAD ---
+    col_res1, col_res2 = st.columns([1, 1])
+    with col_res1:
+        st.success("✅ Generazione completata con successo!")
+        st.metric("Totale Transazioni", len(df))
+        
+    with col_res2:
+        st.markdown("### 👇 Scarica il file")
+        st.download_button(
+            label=f"💾 SCARICA {file_name.upper()}",
+            data=final_data,
+            file_name=file_name,
+            mime=mime,
+            type="primary"
+        )
+        
+        if is_sql:
+            st.info("""
+            **Come importare:**
+            1. Invia questo file al tuo telefono.
+            2. Apri Cashew > Impostazioni > Backup e Ripristino.
+            3. Seleziona **Ripristina Backup** e scegli il file.
             """)
+            
+    if st.button("🔄 Ricomincia da capo"):
+        for key in st.session_state.keys():
+            del st.session_state[key]
+        st.rerun()
