@@ -1,2 +1,6 @@
 streamlit
 pandas
+pydantic
+thefuzz
+python-levenshtein
+plotly
