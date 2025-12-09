@@ -96,5 +96,8 @@ class ProcessedTransaction(BaseModel):
     note: str
     wallet_fk: str
     category_fk: str
+    sub_category_fk: Optional[str] = None # Per sub-categorie
+    main_category_name: Optional[str] = None # Per CSV export
+    sub_category_name: Optional[str] = None # Per CSV export
     is_income: bool
     paired_id: Optional[str] = None # Per i transfer

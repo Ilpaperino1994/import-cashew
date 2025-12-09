@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import datetime
 from database import CashewDatabase
 from logic import detect_transfers, generate_uuid, get_ts
 from models import CashewConfig, ProcessedTransaction
@@ -42,13 +43,37 @@ def render_step4():
         if not w_fk: w_fk = list(w_uuids.values())[0]
 
         # Link Category (or force Transfer)
+        # Default
+        main_cat_name = map_conf.main_category
+        sub_cat_name = map_conf.sub_category if map_conf.sub_category else None
+
         if t.is_transfer:
             title = "Trasferimento"
             c_fk = "0"
+            s_fk = None
+            main_cat_name = "Trasferimento"
+            sub_cat_name = None
         else:
-            title = map_conf.main_category
-            c_fk = c_uuids.get((map_conf.main_category, map_conf.sub_category))
-            if not c_fk: c_fk = c_uuids.get((map_conf.main_category, ""), "0")
+            title = main_cat_name
+            # Resolve UUIDs
+            # If we have a subcategory, we need to populate:
+            # category_fk = Main Cat UUID
+            # sub_category_fk = Sub Cat UUID
+
+            main_uuid = c_uuids.get((main_cat_name, ""), "0")
+
+            if sub_cat_name:
+                sub_uuid = c_uuids.get((main_cat_name, sub_cat_name))
+                if sub_uuid:
+                    c_fk = main_uuid
+                    s_fk = sub_uuid
+                else:
+                    # Fallback if sub not found
+                    c_fk = main_uuid
+                    s_fk = None
+            else:
+                c_fk = main_uuid
+                s_fk = None
 
         t_id = generate_uuid()
 
@@ -60,6 +85,9 @@ def render_step4():
             note=f"{t.note} | {t.payee}" if t.payee else t.note,
             wallet_fk=w_fk,
             category_fk=c_fk,
+            sub_category_fk=s_fk,
+            main_category_name=main_cat_name,
+            sub_category_name=sub_cat_name,
             is_income=t.amount > 0,
             paired_id=None
         )
@@ -129,7 +157,60 @@ def render_step4():
 
         else:
             # CSV Export
-            csv_data = pd.DataFrame([p.dict() for p in processed_list]).to_csv(index=False)
+            # Prepare DataFrame matching original-cashew.csv format
+            csv_rows = []
+
+            # Lookup wallet names for CSV
+            w_names = {v: k for k, v in w_uuids.items()}
+
+            for pt in processed_list:
+                # Convert date_ms to "YYYY-MM-DD HH:MM:SS.mmm"
+                dt = datetime.datetime.fromtimestamp(pt.date_ms / 1000.0)
+                date_fmt = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+                # Map config for color/icon
+                # We need to look up color/icon from cashew_struct again or store it in ProcessedTransaction.
+                # Since ProcessedTransaction doesn't have it, we check session state.
+                cat_data = st.session_state.cashew_struct.get(pt.main_category_name, {})
+                color = cat_data.get("color", "")
+                icon = cat_data.get("icon", "")
+
+                row = {
+                    "account": w_names.get(pt.wallet_fk, "Unknown"),
+                    "amount": pt.amount,
+                    "currency": st.session_state.accounts.get(w_names.get(pt.wallet_fk), {}).currency, # Get currency from config
+                    "title": pt.title,
+                    "note": pt.note.replace("| nan", "").strip(), # Clean up notes
+                    "date": date_fmt,
+                    "income": "true" if pt.is_income else "false",
+                    "type": "null", # Original has null for expenses
+                    "category name": pt.main_category_name if not pt.title == "Trasferimento" else "Trasferimento",
+                    "subcategory name": pt.sub_category_name if pt.sub_category_name else None,
+                    "color": color, # Hex with 0xff prefix in example? Example says "0xff607d8b"
+                    "icon": icon,
+                    "emoji": None,
+                    "budget": None,
+                    "objective": None
+                }
+
+                # Fix color format if needed (Example: 0xff607d8b)
+                # Input color is usually #RRGGBB.
+                if row["color"] and row["color"].startswith("#"):
+                     row["color"] = row["color"].replace("#", "0xff")
+
+                csv_rows.append(row)
+
+            csv_df = pd.DataFrame(csv_rows)
+            # Reorder columns to match original-cashew.csv
+            cols = ["account","amount","currency","title","note","date","income","type","category name","subcategory name","color","icon","emoji","budget","objective"]
+            # Ensure all cols exist
+            for c in cols:
+                if c not in csv_df.columns: csv_df[c] = None
+
+            csv_df = csv_df[cols]
+
+            csv_data = csv_df.to_csv(index=False)
+
             st.download_button(
                 label="📥 Scarica CSV",
                 data=csv_data,
