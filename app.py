@@ -9,7 +9,7 @@ from ui.step4_export import render_step4
 # --- CONFIG & STYLE ---
 st.set_page_config(page_title="Wallet to Cashew Migrator", page_icon="🥥", layout="wide")
 
-# CSS for Dark Mode Support and Custom Styling
+# CSS per Supporto Dark Mode e Stile Personalizzato
 st.markdown("""
 <style>
     /* Global */
@@ -67,7 +67,7 @@ if 'output_format' not in st.session_state: st.session_state.output_format = "SQ
 # --- HEADER ---
 st.title("🥥 Wallet to Cashew Migrator")
 
-steps = ["1. Upload", "2. Categories", "3. Mapping", "4. Export"]
+steps = ["1. Importazione", "2. Struttura Categorie", "3. Mappatura & AI", "4. Esportazione"]
 cols = st.columns(len(steps))
 for i, s in enumerate(steps):
     active = "wizard-active" if st.session_state.step == i + 1 else ""
