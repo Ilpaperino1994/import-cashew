@@ -7,7 +7,10 @@ from logic import detect_transfers, generate_uuid, get_ts
 from models import CashewConfig, ProcessedTransaction
 
 def render_step4():
-    st.markdown("### 🚀 Esportazione Finale")
+    st.markdown('<div class="st-card">', unsafe_allow_html=True)
+    st.markdown("### 🚀 Pronti al Decollo")
+    st.caption("I tuoi dati sono stati elaborati e sono pronti per essere trasferiti.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # 1. Processing Logic
     final_transactions = detect_transfers(st.session_state.transactions)
@@ -43,7 +46,6 @@ def render_step4():
         if not w_fk: w_fk = list(w_uuids.values())[0]
 
         # Link Category (or force Transfer)
-        # Default
         main_cat_name = map_conf.main_category
         sub_cat_name = map_conf.sub_category if map_conf.sub_category else None
 
@@ -55,11 +57,6 @@ def render_step4():
             sub_cat_name = None
         else:
             title = main_cat_name
-            # Resolve UUIDs
-            # If we have a subcategory, we need to populate:
-            # category_fk = Main Cat UUID
-            # sub_category_fk = Sub Cat UUID
-
             main_uuid = c_uuids.get((main_cat_name, ""), "0")
 
             if sub_cat_name:
@@ -68,7 +65,6 @@ def render_step4():
                     c_fk = main_uuid
                     s_fk = sub_uuid
                 else:
-                    # Fallback if sub not found
                     c_fk = main_uuid
                     s_fk = None
             else:
@@ -92,14 +88,12 @@ def render_step4():
             paired_id=None
         )
 
-        # Store temporary to link pairs
         t.temp_id = t_id
         processed_list.append(pt)
 
     # Second pass for pairing
     for i, t in enumerate(final_transactions):
         if hasattr(t, 'paired_with_idx') and t.paired_with_idx is not None:
-            # Check bounds just in case
             if 0 <= t.paired_with_idx < len(processed_list):
                 processed_list[i].paired_id = processed_list[t.paired_with_idx].id
 
@@ -108,27 +102,36 @@ def render_step4():
         db.add_transaction(pt)
 
     # --- UI ---
-    st.success(f"🎉 Tutto pronto! Abbiamo processato **{len(processed_list)}** transazioni.")
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2 = st.columns([1, 1], gap="medium")
 
     with col1:
-        st.subheader("📊 Anteprima Dati")
+        st.markdown('<div class="st-card">', unsafe_allow_html=True)
+        st.subheader("📊 Anteprima")
         df_viz = pd.DataFrame([p.dict() for p in processed_list])
         if not df_viz.empty:
             expenses = df_viz[df_viz['amount'] < 0]
             if not expenses.empty:
                 fig = go.Figure(data=[go.Pie(labels=expenses['title'], values=expenses['amount'].abs(), hole=.4)])
-                fig.update_layout(title="Distribuzione Spese", height=300, margin=dict(t=30, b=0, l=0, r=0))
+                fig.update_layout(
+                    title="Spese per Categoria",
+                    height=300,
+                    margin=dict(t=40, b=0, l=0, r=0),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(color='#E0E0E0')
+                )
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Nessuna spesa trovata per generare il grafico.")
+                st.info("Nessuna spesa trovata.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with col2:
-        st.subheader("💾 Scarica il File")
+        st.markdown('<div class="st-card">', unsafe_allow_html=True)
+        st.subheader("💾 Download")
+        st.write(f"Abbiamo generato **{len(processed_list)}** transazioni.")
 
         if st.session_state.output_format == "SQL":
-            # Binary SQL Export
             try:
                 sql_data = db.get_binary_sqlite()
                 file_name = "cashew_backup.sqlite"
@@ -148,29 +151,23 @@ def render_step4():
             )
 
             st.markdown("""
-            **Come importare su Cashew:**
-            1. Scarica il file sul tuo telefono.
-            2. Apri **Cashew** e vai su **Impostazioni**.
-            3. Seleziona **Backup e Ripristino**.
-            4. Scegli **Ripristina Backup** e seleziona il file scaricato.
-            """)
+            <small style="opacity: 0.7;">
+            <b>Istruzioni:</b><br>
+            1. Scarica il file sul telefono.<br>
+            2. Apri Cashew > Impostazioni > Backup.<br>
+            3. Seleziona "Ripristina Backup".
+            </small>
+            """, unsafe_allow_html=True)
 
         else:
             # CSV Export
-            # Prepare DataFrame matching original-cashew.csv format
             csv_rows = []
-
-            # Lookup wallet names for CSV
             w_names = {v: k for k, v in w_uuids.items()}
 
             for pt in processed_list:
-                # Convert date_ms to "YYYY-MM-DD HH:MM:SS.mmm"
                 dt = datetime.datetime.fromtimestamp(pt.date_ms / 1000.0)
                 date_fmt = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-                # Map config for color/icon
-                # We need to look up color/icon from cashew_struct again or store it in ProcessedTransaction.
-                # Since ProcessedTransaction doesn't have it, we check session state.
                 cat_data = st.session_state.cashew_struct.get(pt.main_category_name, {})
                 color = cat_data.get("color", "")
                 icon = cat_data.get("icon", "")
@@ -178,35 +175,26 @@ def render_step4():
                 row = {
                     "account": w_names.get(pt.wallet_fk, "Unknown"),
                     "amount": pt.amount,
-                    "currency": st.session_state.accounts.get(w_names.get(pt.wallet_fk), {}).currency, # Get currency from config
+                    "currency": st.session_state.accounts.get(w_names.get(pt.wallet_fk), {}).currency,
                     "title": pt.title,
-                    "note": pt.note.replace("| nan", "").strip(), # Clean up notes
+                    "note": pt.note.replace("| nan", "").strip(),
                     "date": date_fmt,
                     "income": "true" if pt.is_income else "false",
-                    "type": "null", # Original has null for expenses
+                    "type": "null",
                     "category name": pt.main_category_name if not pt.title == "Trasferimento" else "Trasferimento",
                     "subcategory name": pt.sub_category_name if pt.sub_category_name else None,
-                    "color": color, # Hex with 0xff prefix in example? Example says "0xff607d8b"
+                    "color": color.replace("#", "0xff") if color and color.startswith("#") else color,
                     "icon": icon,
                     "emoji": None,
                     "budget": None,
                     "objective": None
                 }
-
-                # Fix color format if needed (Example: 0xff607d8b)
-                # Input color is usually #RRGGBB.
-                if row["color"] and row["color"].startswith("#"):
-                     row["color"] = row["color"].replace("#", "0xff")
-
                 csv_rows.append(row)
 
             csv_df = pd.DataFrame(csv_rows)
-            # Reorder columns to match original-cashew.csv
             cols = ["account","amount","currency","title","note","date","income","type","category name","subcategory name","color","icon","emoji","budget","objective"]
-            # Ensure all cols exist
             for c in cols:
                 if c not in csv_df.columns: csv_df[c] = None
-
             csv_df = csv_df[cols]
 
             csv_data = csv_df.to_csv(index=False)
@@ -219,10 +207,11 @@ def render_step4():
                 type="primary",
                 use_container_width=True
             )
-            st.info("Importa questo file manualmente tramite la funzione CSV di Cashew (se disponibile) o usalo per le tue analisi Excel.")
+            st.info("Importa manualmente in Cashew.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
-    c1, c2 = st.columns([1, 5])
-    if c1.button("⬅ Indietro"):
+    if st.button("⬅ Ricomincia", use_container_width=True):
         st.session_state.step = 3
         st.rerun()
