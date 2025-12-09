@@ -1,6 +1,50 @@
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List
+from typing import Optional, List, Dict
 import time
+
+# --- DEFAULT CONFIGURATION RICCA ---
+DEFAULT_CASHEW_STRUCTURE = {
+    "Alimentari": {
+        "subs": ["Supermercato", "Minimarket", "Panificio", "Macelleria"],
+        "color": "#4CAF50", "icon": "groceries.png"
+    },
+    "Ristorazione": {
+        "subs": ["Ristorante", "Bar", "Fast Food", "Delivery", "Caffè"],
+        "color": "#FF9800", "icon": "food.png"
+    },
+    "Trasporti": {
+        "subs": ["Carburante", "Mezzi Pubblici", "Treno", "Taxi", "Parcheggio", "Manutenzione", "Assicurazione"],
+        "color": "#F44336", "icon": "car.png"
+    },
+    "Abitazione": {
+        "subs": ["Affitto", "Mutuo", "Luce", "Gas", "Acqua", "Internet", "Condominio", "Riparazioni"],
+        "color": "#795548", "icon": "house.png"
+    },
+    "Shopping": {
+        "subs": ["Abbigliamento", "Elettronica", "Casa", "Hobby", "Libri", "Regali"],
+        "color": "#9C27B0", "icon": "shopping.png"
+    },
+    "Salute & Benessere": {
+        "subs": ["Farmacia", "Medico", "Dentista", "Sport", "Barbiere/Parrucchiere"],
+        "color": "#00BCD4", "icon": "health.png"
+    },
+    "Intrattenimento": {
+        "subs": ["Cinema", "Streaming (Netflix/Spotify)", "Viaggi", "Hotel", "Eventi"],
+        "color": "#E91E63", "icon": "entertainment.png"
+    },
+    "Reddito": {
+        "subs": ["Stipendio", "Rimborsi", "Bonus", "Vendite"],
+        "color": "#2196F3", "icon": "salary.png"
+    },
+    "Finanza": {
+        "subs": ["Tasse", "Multe", "Commissioni", "Investimenti"],
+        "color": "#607D8B", "icon": "bank.png"
+    },
+    "Correzione saldo": {
+        "subs": [],
+        "color": "#9E9E9E", "icon": "charts.png"
+    }
+}
 
 class WalletTransaction(BaseModel):
     """Rappresenta una riga grezza dal CSV di Wallet"""
@@ -12,6 +56,8 @@ class WalletTransaction(BaseModel):
     payee: Optional[str] = ""
     date_str: str = Field(alias="date")
     is_transfer: bool = False
+    temp_id: Optional[str] = None # For processing
+    paired_with_idx: Optional[int] = None # For processing
 
     @validator('amount', pre=True)
     def parse_amount(cls, v):

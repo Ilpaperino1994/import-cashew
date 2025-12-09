@@ -4,51 +4,7 @@ import datetime
 import time
 from typing import List, Dict
 from thefuzz import process
-from models import WalletTransaction, CashewConfig
-
-# --- DEFAULT CONFIGURATION RICCA ---
-DEFAULT_CASHEW_STRUCTURE = {
-    "Alimentari": {
-        "subs": ["Supermercato", "Minimarket", "Panificio", "Macelleria"],
-        "color": "#4CAF50", "icon": "groceries.png"
-    },
-    "Ristorazione": {
-        "subs": ["Ristorante", "Bar", "Fast Food", "Delivery", "Caffè"],
-        "color": "#FF9800", "icon": "food.png"
-    },
-    "Trasporti": {
-        "subs": ["Carburante", "Mezzi Pubblici", "Treno", "Taxi", "Parcheggio", "Manutenzione", "Assicurazione"],
-        "color": "#F44336", "icon": "car.png"
-    },
-    "Abitazione": {
-        "subs": ["Affitto", "Mutuo", "Luce", "Gas", "Acqua", "Internet", "Condominio", "Riparazioni"],
-        "color": "#795548", "icon": "house.png"
-    },
-    "Shopping": {
-        "subs": ["Abbigliamento", "Elettronica", "Casa", "Hobby", "Libri", "Regali"],
-        "color": "#9C27B0", "icon": "shopping.png"
-    },
-    "Salute & Benessere": {
-        "subs": ["Farmacia", "Medico", "Dentista", "Sport", "Barbiere/Parrucchiere"],
-        "color": "#00BCD4", "icon": "health.png"
-    },
-    "Intrattenimento": {
-        "subs": ["Cinema", "Streaming (Netflix/Spotify)", "Viaggi", "Hotel", "Eventi"],
-        "color": "#E91E63", "icon": "entertainment.png"
-    },
-    "Reddito": {
-        "subs": ["Stipendio", "Rimborsi", "Bonus", "Vendite"],
-        "color": "#2196F3", "icon": "salary.png"
-    },
-    "Finanza": {
-        "subs": ["Tasse", "Multe", "Commissioni", "Investimenti"],
-        "color": "#607D8B", "icon": "bank.png"
-    },
-    "Correzione saldo": {
-        "subs": [],
-        "color": "#9E9E9E", "icon": "charts.png"
-    }
-}
+from models import WalletTransaction, CashewConfig, DEFAULT_CASHEW_STRUCTURE
 
 def fix_encoding(text):
     if not isinstance(text, str): return text
@@ -116,3 +72,56 @@ def get_ts(date_str):
         return int(dt.timestamp() * 1000)
     except:
         return int(time.time() * 1000)
+
+def detect_transfers(transactions: List[WalletTransaction]) -> List[WalletTransaction]:
+    """
+    Identifica le coppie di trasferimenti (Entrata/Uscita) e imposta i riferimenti.
+    Restituisce la lista aggiornata.
+    """
+    # Reset
+    for t in transactions:
+        t.paired_with_idx = None
+
+    # Separate candidates
+    # We only look at transactions marked as transfer
+    # NOTE: Wallet CSV has 'transfer' column. If true, we try to pair.
+
+    # Sort by date for easier matching window
+    # We work on indices to link them back
+
+    # We need a way to efficiently find matches.
+    # Logic: For each outgoing transfer, look for an incoming transfer with:
+    # 1. Same Amount (absolute value)
+    # 2. Different Account
+    # 3. Same Time (or very close, e.g. < 1 min, Wallet exports are usually precise)
+
+    # Optimization: Dictionary by "Amount_Date"
+
+    # Create lookup for incomes
+    incomes = {} # Key: (abs(amount), date_str), Value: List of indices
+
+    for i, t in enumerate(transactions):
+        if t.is_transfer and t.amount > 0:
+            key = (abs(t.amount), t.date_str)
+            if key not in incomes: incomes[key] = []
+            incomes[key].append(i)
+
+    # Match expenses
+    for i, t in enumerate(transactions):
+        if t.is_transfer and t.amount < 0:
+            key = (abs(t.amount), t.date_str)
+
+            # Check for direct match
+            if key in incomes and incomes[key]:
+                # Take the first available match
+                match_idx = incomes[key].pop(0)
+
+                # Link both ways
+                t.paired_with_idx = match_idx
+                transactions[match_idx].paired_with_idx = i
+
+                # Check account?
+                # Usually transfers are between different accounts.
+                # If same account, it might be a mistake or correction, but we link anyway.
+
+    return transactions
