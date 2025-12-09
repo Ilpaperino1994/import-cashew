@@ -3,82 +3,117 @@ import pandas as pd
 from logic import DEFAULT_CASHEW_STRUCTURE
 
 def render_step2():
-    st.markdown('<div class="st-card">', unsafe_allow_html=True)
-    st.markdown("### 📂 Struttura Categorie")
-    st.caption("Definisci le categorie che vuoi usare in Cashew. A sinistra le principali, a destra i dettagli.")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align: center; margin-bottom: 2rem;">
+        <h2 class="hero-text">Organizza le tue Categorie</h2>
+        <p>Definisci la struttura di destinazione per Cashew. Crea, modifica o elimina categorie e sottocategorie.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col_nav, col_editor = st.columns([1, 2], gap="large")
+    col_list, col_edit = st.columns([1, 2], gap="large")
 
-    with col_nav:
-        st.markdown("**Categorie Principali**")
+    # --- LISTA CATEGORIE (SIDEBAR) ---
+    with col_list:
+        st.markdown('<div class="st-card" style="height: 100%;">', unsafe_allow_html=True)
+        st.markdown("### Categorie Principali")
 
-        # Add New
-        with st.form("new_cat_form", clear_on_submit=True):
-            new_cat = st.text_input("Nuova", placeholder="Es. Viaggi...", label_visibility="collapsed")
-            if st.form_submit_button("➕ Aggiungi", use_container_width=True):
-                if new_cat and new_cat not in st.session_state.cashew_struct:
-                    st.session_state.cashew_struct[new_cat] = {"subs": [], "color": "#9E9E9E", "icon": "category_default.png"}
-                    st.session_state.selected_cat_editor = new_cat
+        # New Category Input
+        c_in, c_btn = st.columns([3, 1])
+        with c_in:
+            new_cat_name = st.text_input("Nuova Categoria", placeholder="Es. Casa...", label_visibility="collapsed", key="new_cat_input")
+        with c_btn:
+            if st.button("➕", use_container_width=True, help="Aggiungi Categoria"):
+                if new_cat_name and new_cat_name not in st.session_state.cashew_struct:
+                    st.session_state.cashew_struct[new_cat_name] = {"subs": [], "color": "#9E9E9E", "icon": "category_default.png"}
+                    st.session_state.selected_cat_editor = new_cat_name
                     st.rerun()
 
         st.markdown("---")
 
-        # Scrollable list simulation
-        for cat_name in list(st.session_state.cashew_struct.keys()):
-            style = "primary" if st.session_state.selected_cat_editor == cat_name else "secondary"
-            # Using columns to create a "list item" feel
-            if st.button(f"{cat_name}", key=f"cat_btn_{cat_name}", use_container_width=True, type=style):
-                st.session_state.selected_cat_editor = cat_name
+        # List of Categories as Cards/Buttons
+        cats = list(st.session_state.cashew_struct.keys())
+        for cat in cats:
+            is_active = (st.session_state.selected_cat_editor == cat)
+            # Visual indicator for active state
+            if st.button(
+                f"{'🟢 ' if is_active else ''}{cat}",
+                key=f"sel_{cat}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary"
+            ):
+                st.session_state.selected_cat_editor = cat
                 st.rerun()
 
-    with col_editor:
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # --- EDITOR (MAIN) ---
+    with col_edit:
         active_cat = st.session_state.selected_cat_editor
-        if active_cat in st.session_state.cashew_struct:
+        if active_cat and active_cat in st.session_state.cashew_struct:
             data = st.session_state.cashew_struct[active_cat]
 
-            # Card-like container for editor
-            st.markdown(f"""
-            <div style="background-color: var(--card-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color);">
-                <h3 style="margin-top:0;">{active_cat}</h3>
-            """, unsafe_allow_html=True)
+            st.markdown('<div class="st-card">', unsafe_allow_html=True)
 
-            c1, c2, c3 = st.columns([1, 2, 1])
-            new_color = c1.color_picker("Colore", data['color'])
-            new_icon = c2.text_input("Icona PNG", data['icon'])
+            # Header with Delete
+            c_head, c_del = st.columns([3, 1])
+            with c_head:
+                st.markdown(f"<h2 style='margin:0; color: {data.get('color', '#fff')}'>{active_cat}</h2>", unsafe_allow_html=True)
+            with c_del:
+                if st.button("🗑️ Elimina", key=f"del_{active_cat}", type="secondary", use_container_width=True):
+                    del st.session_state.cashew_struct[active_cat]
+                    keys = list(st.session_state.cashew_struct.keys())
+                    st.session_state.selected_cat_editor = keys[0] if keys else ""
+                    st.rerun()
 
-            if c3.button("🗑️ Elimina", type="primary", use_container_width=True):
-                del st.session_state.cashew_struct[active_cat]
-                keys = list(st.session_state.cashew_struct.keys())
-                st.session_state.selected_cat_editor = keys[0] if keys else ""
-                st.rerun()
+            st.markdown("<br>", unsafe_allow_html=True)
 
-            # Update State
+            # Properties Grid
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.markdown("**Colore Categoria**")
+                new_color = st.color_picker("Colore", data.get('color', '#9E9E9E'), label_visibility="collapsed")
+            with c2:
+                st.markdown("**Nome Icona (PNG)**")
+                new_icon = st.text_input("Icona", data.get('icon', ''), label_visibility="collapsed")
+
+            # Update State immediately
             st.session_state.cashew_struct[active_cat]['color'] = new_color
             st.session_state.cashew_struct[active_cat]['icon'] = new_icon
 
-            st.markdown("##### Sottocategorie")
-            # Table Editor
-            df_subs = pd.DataFrame({"Nome": data['subs']})
+            st.markdown("---")
+            st.markdown("### Sottocategorie")
+            st.caption("Aggiungi o rimuovi sottocategorie usando la tabella qui sotto.")
+
+            df_subs = pd.DataFrame({"Sottocategorie": data['subs']})
             edited_df = st.data_editor(
                 df_subs,
                 num_rows="dynamic",
                 use_container_width=True,
-                key=f"subs_{active_cat}",
+                key=f"editor_{active_cat}",
                 hide_index=True,
-                column_config={"Nome": st.column_config.TextColumn("Nome")}
+                column_config={
+                    "Sottocategorie": st.column_config.TextColumn(
+                        "Nome",
+                        help="Nome della sottocategoria",
+                        required=True
+                    )
+                }
             )
 
-            new_subs = [x.strip() for x in edited_df["Nome"].tolist() if x and x.strip()]
-            st.session_state.cashew_struct[active_cat]['subs'] = new_subs
+            # Sync subs back to state
+            new_subs_list = [x.strip() for x in edited_df["Sottocategorie"].tolist() if x and x.strip()]
+            st.session_state.cashew_struct[active_cat]['subs'] = new_subs_list
 
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.info("Seleziona o crea una categoria per iniziare.")
 
-    st.divider()
-    c1, c2 = st.columns([1, 4])
-    if c1.button("⬅ Indietro", use_container_width=True):
+    # Navigation Footer
+    st.markdown("<br>", unsafe_allow_html=True)
+    c_back, c_next = st.columns([1, 4])
+    if c_back.button("⬅ Indietro", use_container_width=True):
         st.session_state.step = 1
         st.rerun()
-    if c2.button("Avanti: Mappatura ➔", type="primary", use_container_width=True):
+    if c_next.button("Avanti: Mappatura Intelligente ➔", type="primary", use_container_width=True):
         st.session_state.step = 3
         st.rerun()
