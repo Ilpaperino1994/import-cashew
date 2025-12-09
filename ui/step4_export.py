@@ -6,12 +6,9 @@ from logic import detect_transfers, generate_uuid, get_ts
 from models import CashewConfig, ProcessedTransaction
 
 def render_step4():
-    st.markdown("### 🚀 Export")
+    st.markdown("### 🚀 Esportazione Finale")
 
     # 1. Processing Logic
-    # We do this here to ensure we use the latest state
-
-    # a. Detect Transfers
     final_transactions = detect_transfers(st.session_state.transactions)
 
     # b. Prepare Database
@@ -46,24 +43,14 @@ def render_step4():
 
         # Link Category (or force Transfer)
         if t.is_transfer:
-            title = "Transfer"
-            c_fk = "0" # Usually system category or handled differently, but Cashew has no specific "Transfer" category PK in some versions, or uses a flag.
-            # Actually, Cashew uses a 'type' field? Let's check logic.py or just use mapping if not transfer
-            # Note: The logic.py/database.py might need update for 'type'.
-            # For now, we use the "Transfer" text or mapped category if user mapped it.
+            title = "Trasferimento"
+            c_fk = "0"
         else:
             title = map_conf.main_category
             c_fk = c_uuids.get((map_conf.main_category, map_conf.sub_category))
             if not c_fk: c_fk = c_uuids.get((map_conf.main_category, ""), "0")
 
-        # Generate ID (persistent for this session if we wanted, but here fresh)
-        t_id = generate_uuid() # In real app, we might want to keep ID if re-running
-
-        # NOTE: logic.py detect_transfers should have set paired_id on the object if we update models.
-        # But `final_transactions` are `WalletTransaction` models which don't have `paired_id`.
-        # We need to handle the pairing in `ProcessedTransaction`.
-        # Wait, `detect_transfers` returns a list of objects that might have `paired_ref`?
-        # See logic.py update later. Assuming `t` has `paired_with` attribute added dynamically or field.
+        t_id = generate_uuid()
 
         pt = ProcessedTransaction(
             id=t_id,
@@ -74,7 +61,7 @@ def render_step4():
             wallet_fk=w_fk,
             category_fk=c_fk,
             is_income=t.amount > 0,
-            paired_id=None # Placeholder, needs second pass or map
+            paired_id=None
         )
 
         # Store temporary to link pairs
@@ -82,70 +69,79 @@ def render_step4():
         processed_list.append(pt)
 
     # Second pass for pairing
-    # We rely on `detect_transfers` having set `paired_index` or similar.
-    # Let's assume `detect_transfers` modifies `final_transactions` by adding a `paired_with_idx` field.
     for i, t in enumerate(final_transactions):
         if hasattr(t, 'paired_with_idx') and t.paired_with_idx is not None:
-            processed_list[i].paired_id = processed_list[t.paired_with_idx].id
+            # Check bounds just in case
+            if 0 <= t.paired_with_idx < len(processed_list):
+                processed_list[i].paired_id = processed_list[t.paired_with_idx].id
 
     # Insert into DB
     for pt in processed_list:
         db.add_transaction(pt)
 
     # --- UI ---
-    st.success(f"🎉 Ready! Processed {len(processed_list)} transactions.")
+    st.success(f"🎉 Tutto pronto! Abbiamo processato **{len(processed_list)}** transazioni.")
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader("📊 Preview")
+        st.subheader("📊 Anteprima Dati")
         df_viz = pd.DataFrame([p.dict() for p in processed_list])
         if not df_viz.empty:
             expenses = df_viz[df_viz['amount'] < 0]
             if not expenses.empty:
                 fig = go.Figure(data=[go.Pie(labels=expenses['title'], values=expenses['amount'].abs(), hole=.4)])
-                fig.update_layout(height=300, margin=dict(t=0, b=0, l=0, r=0))
+                fig.update_layout(title="Distribuzione Spese", height=300, margin=dict(t=30, b=0, l=0, r=0))
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Nessuna spesa trovata per generare il grafico.")
 
     with col2:
-        st.subheader("💾 Download")
+        st.subheader("💾 Scarica il File")
 
         if st.session_state.output_format == "SQL":
             # Binary SQL Export
             try:
-                # Assuming get_binary_sqlite returns bytes
                 sql_data = db.get_binary_sqlite()
-                file_name = "cashew_backup.sql" # Use .sql or .sqlite as preferred by user
+                file_name = "cashew_backup.sqlite"
                 mime = "application/x-sqlite3"
             except AttributeError:
-                # Fallback if I haven't updated database.py yet (I will in next step)
                 sql_data = db.get_sql_dump().encode('utf-8')
                 file_name = "cashew_restore.sql"
                 mime = "text/x-sql"
 
             st.download_button(
-                label="📥 Download Database (.sql)",
+                label="📥 Scarica Database (.sqlite)",
                 data=sql_data,
                 file_name=file_name,
                 mime=mime,
                 type="primary",
                 use_container_width=True
             )
-            st.info("Import this file in Cashew > Settings > Backup & Restore.")
+
+            st.markdown("""
+            **Come importare su Cashew:**
+            1. Scarica il file sul tuo telefono.
+            2. Apri **Cashew** e vai su **Impostazioni**.
+            3. Seleziona **Backup e Ripristino**.
+            4. Scegli **Ripristina Backup** e seleziona il file scaricato.
+            """)
 
         else:
             # CSV Export
             csv_data = pd.DataFrame([p.dict() for p in processed_list]).to_csv(index=False)
             st.download_button(
-                label="📥 Download CSV",
+                label="📥 Scarica CSV",
                 data=csv_data,
                 file_name="cashew_import.csv",
                 mime="text/csv",
                 type="primary",
                 use_container_width=True
             )
+            st.info("Importa questo file manualmente tramite la funzione CSV di Cashew (se disponibile) o usalo per le tue analisi Excel.")
 
+    st.divider()
     c1, c2 = st.columns([1, 5])
-    if c1.button("⬅ Back"):
+    if c1.button("⬅ Indietro"):
         st.session_state.step = 3
         st.rerun()
